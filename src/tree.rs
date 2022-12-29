@@ -23,6 +23,12 @@ pub struct Tree<'a, const PAGE_SIZE: usize, A: Allocator> {
     backend: &'a A,
 }
 
+impl<'a> PartialEq for Node<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.pos == other.pos
+    }
+}
+
 impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
     fn allocate_space(pages: usize, backend: &A) -> Option<(&mut [Node], &mut [NodeContainer])> {
         let num_pages = pages.next_power_of_two();
@@ -55,8 +61,6 @@ impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
                 nodes_count - 1,
             )
         };
-
-        println!("{:p} {:p}", tree.as_ptr() as *mut Node, container.as_ptr() as *mut NodeContainer);
 
         Some((tree, container))
     }

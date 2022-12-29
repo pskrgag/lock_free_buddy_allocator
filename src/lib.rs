@@ -1,12 +1,14 @@
+#![no_std]
 #![feature(allocator_api)]
 #![feature(slice_ptr_get)]
-#![feature(thread_id_value)]
 #![allow(dead_code)]
 
-extern crate alloc;
+#[cfg(test)]
+#[macro_use]
+extern crate std;
 
-mod buddy_alloc;
-mod cpuid;
+pub mod buddy_alloc;
+pub mod cpuid;
 mod tree;
 
 #[cfg(test)]
@@ -15,10 +17,10 @@ mod test {
     use buddy_alloc::BuddyAlloc;
     use std::{
         alloc::Global,
-        cmp::{Ord, Ordering},
-        collections::HashSet,
+        num::NonZeroU64,
         sync::{Arc, Mutex},
-        thread,
+        thread::{self, ThreadId},
+        vec::Vec,
     };
 
     const PAGE_SIZE: usize = 1 << 12;
@@ -27,7 +29,11 @@ mod test {
 
     impl cpuid::Cpu for Cpu {
         fn current_cpu() -> usize {
-            thread::current().id().as_u64().get() as usize
+            // HACK! Since i don't know how to enable feature under #[cfg(test)] only
+            unsafe {
+                (*(&thread::current().id() as *const ThreadId as *const u8 as *const NonZeroU64))
+                    .get() as usize
+            }
         }
     }
 
@@ -205,7 +211,6 @@ mod test {
         let buddy = Arc::new(BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 1024, &Global).unwrap());
         let res_vec = Arc::new(Mutex::new(Vec::<MemRegion>::new()));
 
-
         let thread = thread::spawn({
             let buddy = buddy.clone();
             let res = res_vec.clone();
@@ -236,5 +241,25 @@ mod test {
         assert!(!intersection(
             Arc::try_unwrap(res_vec).unwrap().into_inner().unwrap()
         ));
+    }
+
+    #[test]
+    fn buddy_alloc_test() {
+        let buddy = Arc::new(BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 10 * 4096, &Global).unwrap());
+
+        let w_ths: Vec<_> = (0..10)
+            .map(|_| {
+                let buddy = buddy.clone();
+                thread::spawn(move || {
+                    for _ in 0..512 {
+                        buddy.alloc(8).unwrap();
+                    }
+                })
+            })
+            .collect();
+
+        for th in w_ths {
+            th.join().unwrap();
+        }
     }
 }

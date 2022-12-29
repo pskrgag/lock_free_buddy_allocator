@@ -16,9 +16,7 @@ pub struct BuddyAlloc<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> {
     _d: PhantomData<C>,
 }
 
-impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
-    BuddyAlloc<'a, PAGE_SIZE, C, A>
-{
+impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, PAGE_SIZE, C, A> {
     #[inline]
     fn level(&self, node: &Node) -> usize {
         self.tree.height() - (node.size / PAGE_SIZE).ilog2() as usize
@@ -64,12 +62,12 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
 
     #[inline]
     fn clean_left_coalesce(val: usize, pos: u8) -> usize {
-        val & !((COALESCE_LEFT << (7 + (5 * (pos as usize - 8)))))
+        val & !(COALESCE_LEFT << (7 + (5 * (pos as usize - 8))))
     }
 
     #[inline]
     fn clean_rigth_coalesce(val: usize, pos: u8) -> usize {
-        val & !((COALESCE_RIGHT << (7 + (5 * (pos as usize - 8)))))
+        val & !(COALESCE_RIGHT << (7 + (5 * (pos as usize - 8))))
     }
 
     #[inline]
@@ -162,7 +160,6 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
         while {
             match self.try_alloc_node(self.tree.node(a)) {
                 None => {
-                   println!("Allocated node {} {} {}", self.tree.node(a).pos, self.tree.parent_of(self.tree.node(a)).pos, self.level(self.tree.node(a)));
                     return Some(self.start + self.tree.node(a).start);
                 }
                 Some(i) => {
@@ -191,9 +188,9 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
         let l_parent = self.tree.left_of(parent);
         let r_parent = self.tree.right_of(parent);
 
-        if l_parent.pos == node.pos && !Self::is_allocable(val, r_parent.container_pos) {
+        if l_parent == node && !Self::is_allocable(val, r_parent.container_pos) {
             true
-        } else if r_parent.pos == node.pos && !Self::is_allocable(val, l_parent.container_pos) {
+        } else if r_parent == node && !Self::is_allocable(val, l_parent.container_pos) {
             true
         } else {
             false
@@ -231,7 +228,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
             cur = node;
             exit = false;
 
-            if self.tree.left_of(parent).pos == node.pos {
+            if self.tree.left_of(parent) == node {
                 if !Self::is_left_coalescing(new_val, parent.container_pos) {
                     return;
                 }
@@ -244,7 +241,8 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
                         .container
                         .nodes
                         .compare_exchange(old_val, new_val, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_err() {
+                        .is_err()
+                    {
                         break 'foo;
                     } else {
                         continue 'foo;
@@ -252,7 +250,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
                 }
             }
 
-            if self.tree.right_of(parent).pos == node.pos {
+            if self.tree.right_of(parent) == node {
                 if !Self::is_right_coalescing(new_val, parent.container_pos) {
                     return;
                 }
@@ -265,7 +263,8 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
                         .container
                         .nodes
                         .compare_exchange(old_val, new_val, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_err() {
+                        .is_err()
+                    {
                         continue 'foo;
                     } else {
                         break 'foo;
@@ -304,7 +303,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
             let mut new_val = parent.container.nodes.load(Ordering::Relaxed);
             let old_val = new_val;
 
-            if self.tree.left_of(parent).pos == node.pos {
+            if self.tree.left_of(parent) == node {
                 new_val = Self::left_coalesce(new_val, parent.container_pos);
             } else {
                 new_val = Self::rigth_coalesce(new_val, parent.container_pos);
@@ -325,7 +324,6 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
     pub fn free_node(&self, node: &Node, upper_bound: &Node) {
         let mut exit;
 
-        println!("Free node {} {} {}", node.pos, self.tree.parent_of(node).pos, self.level(node));
         if node.container.node.pos != upper_bound.pos {
             self.mark(node.container.node, upper_bound);
         }
@@ -347,9 +345,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
                 cur = self.tree.parent_of(cur);
             }
 
-            if !self.tree.is_leaf(node)
-                && node.pos as usize * 2 <= self.tree.node_count()
-            {
+            if !self.tree.is_leaf(node) && node.pos as usize * 2 <= self.tree.node_count() {
                 new_val = self.unlock_descendants(node, new_val);
             }
 
@@ -366,7 +362,6 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
         } {}
 
         if node.container.node.pos != upper_bound.pos && !exit {
-            println!("unmark");
             self.unmark(node.container.node, upper_bound);
         }
     }
@@ -374,14 +369,6 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
     pub fn free(&self, start: usize, pages: usize) {
         let level = self.tree.height() - pages.ilog2() as usize;
         let level_offset = (self.num_pages / (1 << (level - 1))) * PAGE_SIZE;
-
-        // println!("start {}", start);
-        // println!("level_offset {}", level_offset);
-        // println!("level {}", level);
-        // println!(
-        //     "pos {}",
-        //     (1 << (level - 1)) + (start - self.start) / level_offset
-        // );
 
         self.free_node(
             self.tree
@@ -408,7 +395,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
         val
     }
 
-    fn check_parent(&self, node: &Node) -> Option<usize> {
+    fn check_parent(&self, node: &Node) -> Option<(usize, usize)> {
         let mut parent = self.tree.parent_of(node);
         let root = parent.container.node;
 
@@ -420,10 +407,10 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
             let old_val = new_val;
 
             if Self::is_occupied(new_val, parent.container_pos) {
-                return Some(parent.pos as usize);
+                return Some((parent.pos as usize, node.pos as usize));
             }
 
-            if self.tree.left_of(parent).pos == node.pos {
+            if self.tree.left_of(parent) == node {
                 new_val = Self::clean_left_coalesce(new_val, parent.container_pos);
                 new_val = Self::occupy_left(new_val, parent.container_pos);
             } else {
@@ -444,7 +431,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
                 .is_err()
         } {}
 
-        if root.pos == 1 {
+        if root == self.tree.root() {
             None
         } else {
             self.check_parent(root)
@@ -494,18 +481,17 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a>
                 .is_err()
         } {}
 
-        if node.container.node.pos == 1 {
+        if node.container.node == self.tree.root() {
             return None;
         }
 
         match self.check_parent(node.container.node) {
             None => None,
-            Some(i) => {
-                self.free_node(node, node);
+            Some((i, n)) => {
+                self.free_node(node, self.tree.node(n));
                 Some(i)
             }
         }
-
     }
 }
 

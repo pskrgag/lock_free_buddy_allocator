@@ -1,10 +1,19 @@
 [package]
-name = "lock_free_buddy_new"
+name = "lock_free_buddy_allocator"
 version = "0.1.0"
 edition = "2021"
 crate-type = ["lib"]
+authors = ["Pavel Skripkin paskripkin@gmail.com"]
+license = "MIT"
+repository = "https://github.com/pskrgag/rust-qrwlock"
+keywords = ["lock-free", "allocator", "no_std"]
+description = "Scalable lock-free buddy system allocator"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
-static_assertions = "1.1.0"
+[dev-dependencies]
+criterion = {version = "0.3", features = ["html_reports"]}
+
+[[bench]]
+name = "buddy_benchmark"
+harness = false
