@@ -19,6 +19,7 @@ the point of buddy initialization
  - Code refactoring
  - Normal benchmarks
  - Full set of test cases
+ - Support stable rust (??)
 
 ## Example
 
