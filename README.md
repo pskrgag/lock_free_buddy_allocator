@@ -16,6 +16,7 @@ the point of buddy initialization
 
 ## TODO
 
+ - Docs
  - Code refactoring
  - Normal benchmarks
  - Full set of test cases

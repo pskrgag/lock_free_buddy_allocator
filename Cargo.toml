@@ -5,8 +5,8 @@ edition = "2021"
 crate-type = ["lib"]
 authors = ["Pavel Skripkin paskripkin@gmail.com"]
 license = "MIT"
-repository = "https://github.com/pskrgag/rust-qrwlock"
-keywords = ["lock-free", "allocator", "no_std"]
+repository = "https://github.com/pskrgag/lock_free_buddy_allocator"
+keywords = ["lock-free", "allocator", "no_std", "buddy"]
 description = "Scalable lock-free buddy system allocator"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
