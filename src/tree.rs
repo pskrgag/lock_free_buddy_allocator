@@ -24,10 +24,7 @@ pub struct Tree<'a, const PAGE_SIZE: usize, A: Allocator> {
 }
 
 impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
-    fn allocate_space(
-        pages: usize,
-        backend: &A,
-    ) -> Option<(&mut [Node], &mut [NodeContainer])> {
+    fn allocate_space(pages: usize, backend: &A) -> Option<(&mut [Node], &mut [NodeContainer])> {
         let num_pages = pages.next_power_of_two();
         let nodes_count = num_pages * 2 - 1;
 
@@ -36,8 +33,8 @@ impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
                 .ok()?;
 
         let con_layout = Layout::from_size_align(
-            (nodes_count + 1) * size_of::<NodeContainer>(),
-            align_of::<Node>(),
+            (nodes_count - 1) * size_of::<NodeContainer>(),
+            align_of::<NodeContainer>(),
         )
         .ok()?;
 
@@ -55,9 +52,11 @@ impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
         let container = unsafe {
             core::slice::from_raw_parts_mut(
                 container.as_ptr().as_mut_ptr() as *mut NodeContainer,
-                nodes_count + 1,
+                nodes_count - 1,
             )
         };
+
+        println!("{:p} {:p}", tree.as_ptr() as *mut Node, container.as_ptr() as *mut NodeContainer);
 
         Some((tree, container))
     }
@@ -107,7 +106,7 @@ impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
                 if parent.pos * 2 == i as u32 {
                     node.container_pos = parent.container_pos * 2;
                 } else {
-                    node.container_pos = parent.container_pos * 2 + 1;
+                    node.container_pos = (parent.container_pos * 2) + 1;
                 }
             }
 
@@ -123,12 +122,12 @@ impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
             assert!(tree.offset(i as isize).as_mut().unwrap().pos != 0);
 
             // println!(
-            //     "Node: pos {} offset {} size {} level {}",
+            //     "Node: pos {} offset {} level {}, cont_pos {}",
             //     tree.offset(i as isize).as_mut().unwrap().pos,
             //     tree.offset(i as isize).as_mut().unwrap().start,
-            //     tree.offset(i as isize).as_mut().unwrap().size,
             //     height
-            //         - (tree.offset(i as isize).as_mut().unwrap().size / PAGE_SIZE).ilog2() as usize
+            //         - (tree.offset(i as isize).as_mut().unwrap().size / PAGE_SIZE).ilog2() as usize,
+            //     tree.offset(i as isize).as_mut().unwrap().container_pos
             // );
         }
     }
@@ -188,7 +187,7 @@ impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
 
     #[inline]
     pub fn right_of(&self, node: &Node) -> &Node {
-        &self.tree[node.pos as usize * 2]
+        &self.tree[node.pos as usize * 2 + 1]
     }
 
     pub fn is_leaf(&self, node: &Node) -> bool {
@@ -207,9 +206,10 @@ impl<'a, const PAGE_SIZE: usize, A: Allocator> Drop for Tree<'_, PAGE_SIZE, A> {
                 .unwrap();
 
         let con_layout = Layout::from_size_align(
-            (nodes_count + 1) * size_of::<NodeContainer>(),
-            align_of::<Node>(),
-        ).unwrap();
+            (nodes_count - 1) * size_of::<NodeContainer>(),
+            align_of::<NodeContainer>(),
+        )
+        .unwrap();
 
         unsafe {
             let slice = NonNull::new(self.tree.as_mut_ptr() as *mut u8).unwrap();
