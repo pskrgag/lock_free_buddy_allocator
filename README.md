@@ -10,9 +10,15 @@ The buddy memory allocation technique is a memory allocation algorithm that divi
 This allocator intended for OS purposes, but might be also used in user-space.
 
 Allocator requiers any backend allocator for allocating internal data structures. In case of OS it might be
-allocator based on static memory; in case of user-space std::alloc::Global is good candidate. Relying on Global allocator
+allocator based on static memory; in case of user-space `std::alloc::Global` is good candidate. Relying on Global allocator
 seems to be wrong, since buddy system allocator is widly used as page allocator and Global may be not initialized at 
 the point of buddy initialization
+
+## TODO
+
+ - Code refactoring
+ - Normal benchmarks
+ - Full set of test cases
 
 ## Example
 
