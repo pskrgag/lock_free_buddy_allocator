@@ -8,8 +8,6 @@ use lock_free_buddy_allocator::cpuid;
 
 use std::{alloc::Global, thread};
 
-const PAGE_SIZE: usize = 1 << 12;
-
 struct Cpu;
 
 impl cpuid::Cpu for Cpu {
@@ -19,8 +17,8 @@ impl cpuid::Cpu for Cpu {
 }
 
 fn main() {
-    let buddy: BuddyAlloc<PAGE_SIZE, Cpu, std::alloc::Global> =
-        BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 4096, &Global).unwrap();
+    let buddy: BuddyAlloc<Cpu, std::alloc::Global> =
+        BuddyAlloc::<Cpu, _>::new(0, 4096, &Global).unwrap();
 
     buddy.free(buddy.alloc(2).unwrap(), 2);
 }

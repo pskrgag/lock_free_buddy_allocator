@@ -2,6 +2,7 @@
 #![feature(allocator_api)]
 #![feature(slice_ptr_get)]
 #![allow(dead_code)]
+#![cfg_attr(test, feature(thread_id_value))]
 
 #[cfg(test)]
 #[macro_use]
@@ -17,9 +18,8 @@ mod test {
     use buddy_alloc::BuddyAlloc;
     use std::{
         alloc::Global,
-        num::NonZeroU64,
         sync::{Arc, Mutex},
-        thread::{self, ThreadId},
+        thread,
         vec::Vec,
     };
 
@@ -29,11 +29,7 @@ mod test {
 
     impl cpuid::Cpu for Cpu {
         fn current_cpu() -> usize {
-            // HACK! Since i don't know how to enable feature under #[cfg(test)] only
-            unsafe {
-                (*(&thread::current().id() as *const ThreadId as *const u8 as *const NonZeroU64))
-                    .get() as usize
-            }
+            thread::current().id().as_u64().get() as usize
         }
     }
 
@@ -118,13 +114,14 @@ mod test {
 
     #[test]
     fn basic_create() {
-        let _buddy = BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 10, &Global).unwrap();
-        let _buddy = BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(1000, 1000, &Global).unwrap();
+        assert!(BuddyAlloc::<Cpu, _>::new(0, 10, &Global).is_none());
+        assert!(BuddyAlloc::<Cpu, _>::new(1000, 1000, &Global).is_none());
+        assert!(BuddyAlloc::<Cpu, _>::new(0, 1 << 4, &Global).is_some());
     }
 
     #[test]
     fn alloc_child() {
-        let buddy = BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 1024, &Global).unwrap();
+        let buddy = BuddyAlloc::<Cpu, _>::new(0, 1024, &Global).unwrap();
 
         assert!(buddy.__try_alloc_node(513).is_none());
         assert!(buddy.__try_alloc_node(513 * 2 + 1).is_some());
@@ -132,11 +129,11 @@ mod test {
 
     #[test]
     fn basic_alloc() {
-        let buddy = BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 16, &Global).unwrap();
+        let buddy = BuddyAlloc::<Cpu, _>::new(0, 16, &Global).unwrap();
         let mut vec = Vec::with_capacity(8);
 
         for _ in 0..8 {
-            vec.push(MemRegion::new(buddy.alloc(2).unwrap(), 2 * PAGE_SIZE));
+            vec.push(MemRegion::new(buddy.alloc(1).unwrap(), 2 * PAGE_SIZE));
         }
 
         assert!(!intersection(vec));
@@ -145,11 +142,11 @@ mod test {
 
     #[test]
     fn basic_alloc_1() {
-        let buddy = BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 1024, &Global).unwrap();
+        let buddy = BuddyAlloc::<Cpu, _>::new(0, 1024, &Global).unwrap();
         let mut vec = Vec::with_capacity(8);
 
         for _ in 0..512 {
-            vec.push(MemRegion::new(buddy.alloc(2).unwrap(), 2 * PAGE_SIZE));
+            vec.push(MemRegion::new(buddy.alloc(1).unwrap(), 2 * PAGE_SIZE));
         }
 
         assert!(!intersection(vec));
@@ -158,10 +155,10 @@ mod test {
 
     #[test]
     fn basic_free() {
-        let buddy = BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 16, &Global).unwrap();
+        let buddy = BuddyAlloc::<Cpu, _>::new(0, 16, &Global).unwrap();
         let mut addrs = Vec::with_capacity(16);
 
-        for _ in 0..5 {
+        for _ in 0..4 {
             addrs.push(buddy.alloc(2).unwrap());
         }
 
@@ -169,33 +166,33 @@ mod test {
             buddy.free(i, 2);
         }
 
-        for _ in 0..8 {
+        for _ in 0..4 {
             assert!(buddy.alloc(2).is_some())
         }
     }
 
     #[test]
     fn multi_threaded_alloc_same_size() {
-        let buddy = Arc::new(BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 1024, &Global).unwrap());
+        let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 1024, &Global).unwrap());
         let res_vec = Arc::new(Mutex::new(Vec::<MemRegion>::new()));
 
         let thread = thread::spawn({
             let buddy = buddy.clone();
             let res = res_vec.clone();
             move || {
-                for _ in 0..256 {
+                for _ in 0..(1024 >> 2) / 2 {
                     res.lock()
                         .unwrap()
-                        .push(MemRegion::new(buddy.alloc(2).unwrap(), 2 * PAGE_SIZE));
+                        .push(MemRegion::new(buddy.alloc(2).unwrap(), (1 << 2) * PAGE_SIZE));
                 }
             }
         });
 
-        for _ in 0..256 {
+        for _ in 0..(1024 >> 2) / 2 {
             res_vec
                 .lock()
                 .unwrap()
-                .push(MemRegion::new(buddy.alloc(2).unwrap(), 2 * PAGE_SIZE));
+                .push(MemRegion::new(buddy.alloc(2).unwrap(), (1 << 2) * PAGE_SIZE));
         }
 
         thread.join().unwrap();
@@ -208,35 +205,35 @@ mod test {
 
     #[test]
     fn multi_threaded_alloc_diff_size() {
-        let buddy = Arc::new(BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 1024, &Global).unwrap());
+        let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 1024, &Global).unwrap());
         let res_vec = Arc::new(Mutex::new(Vec::<MemRegion>::new()));
 
         let thread = thread::spawn({
             let buddy = buddy.clone();
             let res = res_vec.clone();
             move || {
-                for _ in 0..127 {
+                for _ in 0..(1024 / 2) >> 4 {
                     res.lock()
                         .unwrap()
-                        .push(MemRegion::new(buddy.alloc(4).unwrap(), 4 * PAGE_SIZE));
+                        .push(MemRegion::new(buddy.alloc(4).unwrap(), 4));
                 }
             }
         });
 
-        for _ in 0..256 {
+        for _ in 0..(1024 / 2) >> 2 {
             res_vec
                 .lock()
                 .unwrap()
-                .push(MemRegion::new(buddy.alloc(2).unwrap(), 2 * PAGE_SIZE));
+                .push(MemRegion::new(buddy.alloc(2).unwrap(), 2));
         }
 
         thread.join().unwrap();
 
         for i in &*res_vec.lock().unwrap() {
-            buddy.free(i.start, i.size / PAGE_SIZE);
+            buddy.free(i.start, i.size);
         }
 
-        assert!(buddy.alloc(1024).is_some());
+        assert!(buddy.alloc(10).is_some());
 
         assert!(!intersection(
             Arc::try_unwrap(res_vec).unwrap().into_inner().unwrap()
@@ -245,14 +242,14 @@ mod test {
 
     #[test]
     fn buddy_alloc_test() {
-        let buddy = Arc::new(BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, 10 * 4096, &Global).unwrap());
+        let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 4096, &Global).unwrap());
 
         let w_ths: Vec<_> = (0..10)
             .map(|_| {
                 let buddy = buddy.clone();
                 thread::spawn(move || {
-                    for _ in 0..512 {
-                        buddy.alloc(8).unwrap();
+                    for _ in 0..(4096 >> 3) / 10 {
+                        buddy.alloc(3).unwrap();
                     }
                 })
             })

@@ -54,7 +54,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             b.iter(|| {
                 buddy_alloc_test(
                     *i,
-                    BuddyAlloc::<PAGE_SIZE, Cpu, _>::new(0, *s * 4096, &Global).unwrap(),
+                    BuddyAlloc::<PAGE_SIZE, Cpu, _>::new((0..*s * 4096), &Global).unwrap(),
                 )
             });
         });

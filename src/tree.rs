@@ -2,12 +2,12 @@ use core::alloc::{Allocator, Layout};
 use core::mem::{align_of, size_of};
 use core::sync::atomic::AtomicUsize;
 
-pub struct NodeContainer<'a> {
+pub(crate) struct NodeContainer<'a> {
     pub nodes: AtomicUsize,
     pub node: &'a Node<'a>,
 }
 
-pub struct Node<'a> {
+pub(crate) struct Node<'a> {
     pub start: usize,
     pub size: usize,
     pub pos: u32,
@@ -15,7 +15,7 @@ pub struct Node<'a> {
     pub container: &'a NodeContainer<'a>,
 }
 
-pub struct Tree<'a, const PAGE_SIZE: usize, A: Allocator> {
+pub(crate) struct Tree<'a, const PAGE_SIZE: usize, A: Allocator> {
     tree: &'a mut [Node<'a>],
     container: &'a mut [NodeContainer<'a>],
     height: usize,
@@ -80,7 +80,7 @@ impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
         root.pos = 1;
         root.container_pos = 1;
 
-        let mut node = nodes.offset(container_num).as_mut().unwrap();
+        let node = nodes.offset(container_num).as_mut().unwrap();
 
         node.node = tree.offset(1).as_ref().unwrap();
         root.container = nodes.offset(container_num).as_ref().unwrap();
@@ -95,7 +95,7 @@ impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
             node.size = parent.size / 2;
 
             if (height - (node.size / PAGE_SIZE).ilog2() as usize) % 4 == 1 {
-                let mut n = nodes.offset(container_num).as_mut().unwrap();
+                let n = nodes.offset(container_num).as_mut().unwrap();
 
                 n.node = node;
 
@@ -151,7 +151,7 @@ impl<'a, const PAGE_SIZE: usize, A: Allocator> Tree<'a, PAGE_SIZE, A> {
         }
 
         Some(Self {
-            tree: tree,
+            tree,
             container: nodes,
             height: heigth,
             num_nodes: pages * 2 - 1,
