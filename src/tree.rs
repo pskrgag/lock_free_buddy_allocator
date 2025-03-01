@@ -1,24 +1,42 @@
+use super::state::NodeState;
 use core::alloc::{Allocator, Layout};
 use core::mem::{align_of, size_of};
-use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
 pub(crate) struct NodeContainer<'a> {
-    pub nodes: AtomicUsize,
+    nodes: AtomicUsize,
     pub node: &'a Node<'a>,
 }
 
+impl NodeContainer<'_> {
+    pub fn get_state(&self) -> NodeState {
+        self.nodes.load(Ordering::Relaxed).into()
+    }
+
+    pub fn try_update(&self, old: NodeState, current: NodeState) -> bool {
+        self.nodes
+            .compare_exchange(*old, *current, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    }
+}
+
+/// The node of the binary tree
 #[derive(Debug)]
 pub(crate) struct Node<'a> {
+    // Start of the region
     pub start: usize,
+    // Order of the region
     pub order: u8,
+    // Position in the binary tree
     pub pos: u32,
+    // Position of the node container
     pub container_pos: u8,
     pub container: &'a NodeContainer<'a>,
 }
 
 pub(crate) struct Tree<'a, A: Allocator> {
-    pub tree: &'a mut [Node<'a>],
+    tree: &'a mut [Node<'a>],
     container: &'a mut [NodeContainer<'a>],
     order: u8,
     backend: &'a A,

@@ -1,14 +1,11 @@
 //! Core allocator structure
 
 use core::alloc::Allocator;
-use core::sync::atomic::Ordering;
 
+use super::state::NodeState;
 use crate::cpuid::Cpu;
 use crate::tree::{Node, Tree};
 use core::marker::PhantomData;
-
-const COALESCE_LEFT: usize = 0x8;
-const COALESCE_RIGHT: usize = 0x4;
 
 /// Lock-free buddy system allocator.
 ///
@@ -29,104 +26,6 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
     #[inline]
     fn level(&self, node: &Node) -> usize {
         self.tree.height() - node.order as usize
-    }
-
-    #[inline]
-    fn is_allocable(val: usize, pos: u8) -> bool {
-        if pos < 8 {
-            (val & (0x1 << (pos - 1))) == 0
-        } else {
-            val & ((0x1F << 7) << (5 * (pos - 8))) == 0
-        }
-    }
-
-    #[inline]
-    fn is_occupied(val: usize, pos: u8) -> bool {
-        if pos < 8 {
-            (val & (0x1 << (pos - 1))) != 0
-        } else {
-            val & ((0x1 << 6) << (5 * (pos - 7))) != 0
-        }
-    }
-
-    #[inline]
-    fn lock_not_leaf(val: usize, pos: u8) -> usize {
-        val | (0x1 << (pos as usize - 1))
-    }
-
-    #[inline]
-    fn lock_leaf(val: usize, pos: u8) -> usize {
-        val | (0x13 << (7 + (5 * (pos as usize - 8))))
-    }
-
-    #[inline]
-    fn unlock_not_leaf(val: usize, pos: u8) -> usize {
-        val & !(0x1 << (pos as usize - 1))
-    }
-
-    #[inline]
-    fn unlock_leaf(val: usize, pos: u8) -> usize {
-        val & !(0x13 << (7 + (5 * (pos as usize - 8))))
-    }
-
-    #[inline]
-    fn clean_left_coalesce(val: usize, pos: u8) -> usize {
-        val & !(COALESCE_LEFT << (7 + (5 * (pos as usize - 8))))
-    }
-
-    #[inline]
-    fn clean_rigth_coalesce(val: usize, pos: u8) -> usize {
-        val & !(COALESCE_RIGHT << (7 + (5 * (pos as usize - 8))))
-    }
-
-    #[inline]
-    fn left_coalesce(val: usize, pos: u8) -> usize {
-        val | (COALESCE_LEFT << (7 + (5 * (pos as usize - 8))))
-    }
-
-    #[inline]
-    fn rigth_coalesce(val: usize, pos: u8) -> usize {
-        val | (COALESCE_RIGHT << (7 + (5 * (pos as usize - 8))))
-    }
-
-    #[inline]
-    fn occupy_left(val: usize, pos: u8) -> usize {
-        val | (0x2 << (7 + (5 * (pos as usize - 8))))
-    }
-
-    #[inline]
-    fn occupy_rigth(val: usize, pos: u8) -> usize {
-        val | (0x1 << (7 + (5 * (pos as usize - 8))))
-    }
-
-    #[inline]
-    fn is_left_coalescing(val: usize, pos: u8) -> bool {
-        val == Self::left_coalesce(val, pos)
-    }
-
-    #[inline]
-    fn is_right_coalescing(val: usize, pos: u8) -> bool {
-        val == Self::rigth_coalesce(val, pos)
-    }
-
-    #[inline]
-    fn clean_left(val: usize, pos: u8) -> usize {
-        val & !(0x2 << (7 + (5 * (pos - 8))))
-    }
-
-    #[inline]
-    fn clean_rigth(val: usize, pos: u8) -> usize {
-        val & !(0x1 << (7 + (5 * (pos - 8))))
-    }
-
-    #[inline]
-    fn is_occupied_rigth(val: usize, pos: u8) -> bool {
-        val == Self::occupy_rigth(val, pos)
-    }
-
-    #[inline]
-    fn is_occupied_left(val: usize, pos: u8) -> bool {
-        val == Self::occupy_left(val, pos)
     }
 
     /// Creates new buddy allocator.
@@ -191,32 +90,31 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         None
     }
 
-    fn check_brother(&self, node: &Node, val: usize) -> bool {
+    fn check_brother(&self, node: &Node, val: NodeState) -> bool {
         let parent = self.tree.parent_of(node);
         let l_parent = self.tree.left_of(parent);
         let r_parent = self.tree.right_of(parent);
 
-        l_parent == node && !Self::is_allocable(val, r_parent.container_pos)
-            || r_parent == node && !Self::is_allocable(val, l_parent.container_pos)
+        l_parent == node && !val.is_allocable(r_parent.container_pos)
+            || r_parent == node && !val.is_allocable(l_parent.container_pos)
     }
 
-    fn unlock_descendants(&self, node: &Node, mut val: usize) -> usize {
+    fn unlock_descendants(&self, node: &Node, mut val: NodeState) -> NodeState {
         if node.pos as usize * 2 >= self.tree.node_count() {
             return val;
         }
 
         if !self.tree.is_leaf(self.tree.left_of(node)) {
-            val = Self::lock_not_leaf(val, self.tree.left_of(node).container_pos);
-            val = Self::lock_not_leaf(val, self.tree.right_of(node).container_pos);
+            val = val
+                .lock_not_leaf(self.tree.left_of(node).container_pos)
+                .lock_not_leaf(self.tree.right_of(node).container_pos);
 
             val = self.unlock_descendants(self.tree.left_of(node), val);
-            val = self.unlock_descendants(self.tree.right_of(node), val);
+            self.unlock_descendants(self.tree.right_of(node), val)
         } else {
-            val = Self::lock_leaf(val, self.tree.left_of(node).container_pos);
-            val = Self::lock_leaf(val, self.tree.right_of(node).container_pos);
+            val.lock_leaf(self.tree.left_of(node).container_pos)
+                .lock_leaf(self.tree.right_of(node).container_pos)
         }
-
-        val
     }
 
     fn unmark(&self, node: &Node, upper_bound: &Node) {
@@ -225,49 +123,41 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
         'foo: while {
             let parent = self.tree.parent_of(node);
-            let mut new_val = parent.container.nodes.load(Ordering::Relaxed);
+            let mut new_val = parent.container.get_state();
             let old_val = new_val;
 
             cur = node;
             exit = false;
 
             if self.tree.left_of(parent) == node {
-                if !Self::is_left_coalescing(new_val, parent.container_pos) {
+                if !new_val.is_left_coalescing(parent.container_pos) {
                     return;
                 }
 
-                new_val = Self::clean_left_coalesce(new_val, parent.container_pos);
-                new_val = Self::clean_left(new_val, parent.container_pos);
+                new_val = new_val
+                    .clean_left_coalesce(parent.container_pos)
+                    .clean_left(parent.container_pos);
 
-                if Self::is_occupied_rigth(new_val, parent.container_pos) {
-                    if parent
-                        .container
-                        .nodes
-                        .compare_exchange(old_val, new_val, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_err()
-                    {
-                        break 'foo;
-                    } else {
+                if new_val.is_occupied_rigth(parent.container_pos) {
+                    if !parent.container.try_update(old_val, new_val) {
                         continue 'foo;
+                    } else {
+                        break 'foo;
                     }
                 }
             }
 
             if self.tree.right_of(parent) == node {
-                if !Self::is_right_coalescing(new_val, parent.container_pos) {
+                if !new_val.is_right_coalescing(parent.container_pos) {
                     return;
                 }
 
-                new_val = Self::clean_rigth_coalesce(new_val, parent.container_pos);
-                new_val = Self::clean_rigth(new_val, parent.container_pos);
+                new_val = new_val
+                    .clean_rigth_coalesce(parent.container_pos)
+                    .clean_rigth(parent.container_pos);
 
-                if Self::is_occupied_left(new_val, parent.container_pos) {
-                    if parent
-                        .container
-                        .nodes
-                        .compare_exchange(old_val, new_val, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_err()
-                    {
+                if new_val.is_occupied_left(parent.container_pos) {
+                    if !parent.container.try_update(old_val, new_val) {
                         continue 'foo;
                     } else {
                         break 'foo;
@@ -277,21 +167,17 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
             cur = self.tree.parent_of(node);
 
-            'bar: while cur.pos != cur.container.node.pos {
+            while cur.pos != cur.container.node.pos {
                 exit = self.check_brother(cur, new_val);
                 if exit {
-                    break 'bar;
+                    break;
                 }
 
-                new_val = Self::unlock_not_leaf(new_val, self.tree.parent_of(cur).container_pos);
+                new_val = new_val.unlock_not_leaf(self.tree.parent_of(cur).container_pos);
                 cur = self.tree.parent_of(cur);
             }
 
-            parent
-                .container
-                .nodes
-                .compare_exchange(old_val, new_val, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
+            !parent.container.try_update(old_val, new_val)
         } {}
 
         if cur.pos != upper_bound.pos && !exit {
@@ -303,20 +189,16 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         let parent = self.tree.parent_of(node);
 
         while {
-            let mut new_val = parent.container.nodes.load(Ordering::Relaxed);
+            let mut new_val = parent.container.get_state();
             let old_val = new_val;
 
-            if self.tree.left_of(parent) == node {
-                new_val = Self::left_coalesce(new_val, parent.container_pos);
+            new_val = if self.tree.left_of(parent) == node {
+                new_val.left_coalesce(parent.container_pos)
             } else {
-                new_val = Self::rigth_coalesce(new_val, parent.container_pos);
-            }
+                new_val.rigth_coalesce(parent.container_pos)
+            };
 
-            parent
-                .container
-                .nodes
-                .compare_exchange(old_val, new_val, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
+            !parent.container.try_update(old_val, new_val)
         } {}
 
         if parent.container.node.pos != upper_bound.pos {
@@ -332,7 +214,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         }
 
         while {
-            let mut new_val = node.container.nodes.load(Ordering::Relaxed);
+            let mut new_val = node.container.get_state();
             let old_val = new_val;
             let mut cur = node;
 
@@ -344,7 +226,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
                     break 'inner;
                 }
 
-                new_val = Self::unlock_not_leaf(new_val, self.tree.parent_of(cur).container_pos);
+                new_val = new_val.unlock_not_leaf(self.tree.parent_of(cur).container_pos);
                 cur = self.tree.parent_of(cur);
             }
 
@@ -353,15 +235,12 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
             }
 
             if self.tree.is_leaf(node) {
-                new_val = Self::unlock_leaf(new_val, node.container_pos);
+                new_val = new_val.unlock_leaf(node.container_pos);
             } else {
-                new_val = Self::unlock_not_leaf(new_val, node.container_pos);
+                new_val = new_val.unlock_not_leaf(node.container_pos);
             }
 
-            node.container
-                .nodes
-                .compare_exchange(old_val, new_val, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
+            !node.container.try_update(old_val, new_val)
         } {}
 
         if node.container.node.pos != upper_bound.pos && !exit {
@@ -388,7 +267,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         Some(())
     }
 
-    fn lock_descendants(&self, node: &Node, mut val: usize) -> usize {
+    fn lock_descendants(&self, node: &Node, mut val: NodeState) -> NodeState {
         if node.pos as usize * 2 >= self.tree.node_count() {
             return val;
         }
@@ -396,16 +275,16 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         debug_assert!(node.order != 0);
 
         if !self.tree.is_leaf(self.tree.left_of(node)) {
-            val = Self::lock_not_leaf(val, self.tree.left_of(node).container_pos);
-            val = Self::lock_not_leaf(val, self.tree.right_of(node).container_pos);
-            val = self.lock_descendants(self.tree.left_of(node), val);
-            val = self.lock_descendants(self.tree.right_of(node), val);
-        } else {
-            val = Self::lock_leaf(val, self.tree.left_of(node).container_pos);
-            val = Self::lock_leaf(val, self.tree.right_of(node).container_pos);
-        }
+            val = val
+                .lock_not_leaf(self.tree.left_of(node).container_pos)
+                .lock_not_leaf(self.tree.right_of(node).container_pos);
 
-        val
+            val = self.lock_descendants(self.tree.left_of(node), val);
+            self.lock_descendants(self.tree.right_of(node), val)
+        } else {
+            val.lock_leaf(self.tree.left_of(node).container_pos)
+                .lock_leaf(self.tree.right_of(node).container_pos)
+        }
     }
 
     fn check_parent(&self, node: &Node) -> Option<(usize, usize)> {
@@ -415,33 +294,35 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         while {
             let mut new_val;
 
-            new_val = parent.container.nodes.load(Ordering::Relaxed);
+            new_val = parent.container.get_state();
 
             let old_val = new_val;
 
-            if Self::is_occupied(new_val, parent.container_pos) {
+            if new_val.is_occupied(parent.container_pos) {
                 return Some((parent.pos as usize, node.pos as usize));
             }
 
-            if self.tree.left_of(parent) == node {
-                new_val = Self::clean_left_coalesce(new_val, parent.container_pos);
-                new_val = Self::occupy_left(new_val, parent.container_pos);
+            new_val = if self.tree.left_of(parent) == node {
+                new_val
+                    .clean_left_coalesce(parent.container_pos)
+                    .occupy_left(parent.container_pos)
             } else {
-                new_val = Self::clean_rigth_coalesce(new_val, parent.container_pos);
-                new_val = Self::occupy_rigth(new_val, parent.container_pos);
-            }
+                new_val
+                    .clean_rigth_coalesce(parent.container_pos)
+                    .occupy_rigth(parent.container_pos)
+            };
 
-            new_val = Self::lock_not_leaf(new_val, self.tree.parent_of(parent).container_pos);
+            new_val = new_val.lock_not_leaf(self.tree.parent_of(parent).container_pos);
             parent = self.tree.parent_of(parent);
-            new_val = Self::lock_not_leaf(new_val, self.tree.parent_of(parent).container_pos);
-            new_val = Self::lock_not_leaf(new_val, root.container_pos);
+            new_val = new_val
+                .lock_not_leaf(self.tree.parent_of(parent).container_pos)
+                .lock_not_leaf(root.container_pos);
 
-            self.tree
+            !self
+                .tree
                 .parent_of(node)
                 .container
-                .nodes
-                .compare_exchange(old_val, new_val, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
+                .try_update(old_val, new_val)
         } {}
 
         if root == self.tree.root() {
@@ -461,9 +342,9 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         while {
             let mut new_val;
 
-            new_val = node.container.nodes.load(Ordering::Relaxed);
+            new_val = node.container.get_state();
 
-            if !Self::is_allocable(new_val, node.container_pos) {
+            if !new_val.is_allocable(node.container_pos) {
                 return Some(node.pos as usize);
             }
 
@@ -473,25 +354,22 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
             let mut cur = node;
 
             while cur.pos != root_pos {
-                new_val = Self::lock_not_leaf(new_val, self.tree.parent_of(cur).container_pos);
+                new_val = new_val.lock_not_leaf(self.tree.parent_of(cur).container_pos);
 
                 cur = self.tree.parent_of(cur);
             }
 
             if self.tree.is_leaf(node) {
-                new_val = Self::lock_leaf(new_val, node.container_pos);
+                new_val = new_val.lock_leaf(node.container_pos);
             } else {
-                new_val = Self::lock_not_leaf(new_val, node.container_pos);
+                new_val = new_val.lock_not_leaf(node.container_pos);
 
                 if node.pos as usize * 2 < self.tree.node_count() {
                     new_val = self.lock_descendants(node, new_val);
                 }
             }
 
-            node.container
-                .nodes
-                .compare_exchange(old_val, new_val, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
+            !node.container.try_update(old_val, new_val)
         } {}
 
         if node.container.node == self.tree.root() {

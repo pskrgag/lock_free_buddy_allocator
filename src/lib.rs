@@ -1,6 +1,28 @@
 //! Scalable lock-free buddy system allocator implementation
 //!
 //! Algorithm is based on [Andrea Scarselli's thesis](https://alessandropellegrini.it/publications/tScar17.pdf).
+//!
+//! Algorithm works on top of pre-allocated full binary tree where each node represents a
+//! contiguous memory region with size equal to some power of two. For non-leaf nodes, right and
+//! left children represent nodes that occupy the same range, but with two times smaller size. For
+//! example tree for range 0..2 looks like following
+//!
+//! ```md
+//!           ----------
+//!          | start: 0 |
+//!      +---| order: 1 | ------+
+//!      |    ---------         |
+//!      v                      v
+//!   ----------            ----------
+//!  | start: 0 |          | start: 1 |
+//!  | order: 0 |          | order: 0 |
+//!   ---------             ---------
+//!
+//! ```
+//!
+//! Each node also contains state variable that contain various info about 
+//!
+//!
 
 #![no_std]
 #![feature(allocator_api)]
@@ -8,13 +30,14 @@
 #![allow(dead_code)]
 #![cfg_attr(test, feature(thread_id_value))]
 
-// #[cfg(test)]
-// #[macro_use]
+#[cfg(test)]
+#[macro_use]
 extern crate std;
 
 pub mod buddy_alloc;
 pub mod cpuid;
 mod tree;
+mod state;
 
 #[cfg(test)]
 mod test {
