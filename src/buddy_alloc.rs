@@ -149,13 +149,13 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
     /// On success return address of the start of the region, otherwise returns None
     /// indicating out-of-memory situation
     pub fn alloc(&self, order: usize) -> Option<usize> {
-        let start_node = 1 << (self.order as usize - order as usize);
-        let last_node = (self.tree.node(start_node).pos * 2 - 1) as usize;
+        let start_node = 1 << (self.order as usize - order);
+        let last_node = (self.tree.left_of(self.tree.node(start_node)).pos - 1) as usize;
         let mut a = C::current_cpu();
         let mut restared = false;
 
         if last_node - start_node != 0 {
-            a = a % (last_node - start_node);
+            a %= last_node - start_node;
         } else {
             a = 0;
         }
@@ -196,13 +196,8 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         let l_parent = self.tree.left_of(parent);
         let r_parent = self.tree.right_of(parent);
 
-        if l_parent == node && !Self::is_allocable(val, r_parent.container_pos) {
-            true
-        } else if r_parent == node && !Self::is_allocable(val, l_parent.container_pos) {
-            true
-        } else {
-            false
-        }
+        l_parent == node && !Self::is_allocable(val, r_parent.container_pos)
+            || r_parent == node && !Self::is_allocable(val, l_parent.container_pos)
     }
 
     fn unlock_descendants(&self, node: &Node, mut val: usize) -> usize {
@@ -465,7 +460,6 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         debug_assert!(node.container_pos != 0);
         while {
             let mut new_val;
-            let old_val;
 
             new_val = node.container.nodes.load(Ordering::Relaxed);
 
@@ -473,7 +467,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
                 return Some(node.pos as usize);
             }
 
-            old_val = new_val;
+            let old_val = new_val;
 
             let root_pos = node.container.node.pos;
             let mut cur = node;
@@ -514,11 +508,5 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
     }
 }
 
-unsafe impl<'a, C: Cpu, A: Allocator, const PAGE_SIZE: usize> Send
-    for BuddyAlloc<'a, C, A, PAGE_SIZE>
-{
-}
-unsafe impl<'a, C: Cpu, A: Allocator, const PAGE_SIZE: usize> Sync
-    for BuddyAlloc<'a, C, A, PAGE_SIZE>
-{
-}
+unsafe impl<C: Cpu, A: Allocator, const PAGE_SIZE: usize> Send for BuddyAlloc<'_, C, A, PAGE_SIZE> {}
+unsafe impl<C: Cpu, A: Allocator, const PAGE_SIZE: usize> Sync for BuddyAlloc<'_, C, A, PAGE_SIZE> {}

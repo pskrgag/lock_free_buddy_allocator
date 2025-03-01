@@ -45,10 +45,7 @@ mod test {
 
     impl MemRegion {
         pub fn new(start: usize, size: usize) -> Self {
-            Self {
-                start,
-                size,
-            }
+            Self { start, size }
         }
     }
 
@@ -185,18 +182,19 @@ mod test {
             let res = res_vec.clone();
             move || {
                 for _ in 0..(1024 >> 2) / 2 {
-                    res.lock()
-                        .unwrap()
-                        .push(MemRegion::new(buddy.alloc(2).unwrap(), (1 << 2) * PAGE_SIZE));
+                    res.lock().unwrap().push(MemRegion::new(
+                        buddy.alloc(2).unwrap(),
+                        (1 << 2) * PAGE_SIZE,
+                    ));
                 }
             }
         });
 
         for _ in 0..(1024 >> 2) / 2 {
-            res_vec
-                .lock()
-                .unwrap()
-                .push(MemRegion::new(buddy.alloc(2).unwrap(), (1 << 2) * PAGE_SIZE));
+            res_vec.lock().unwrap().push(MemRegion::new(
+                buddy.alloc(2).unwrap(),
+                (1 << 2) * PAGE_SIZE,
+            ));
         }
 
         thread.join().unwrap();

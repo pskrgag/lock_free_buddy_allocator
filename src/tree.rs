@@ -20,24 +20,23 @@ pub(crate) struct Node<'a> {
 pub(crate) struct Tree<'a, A: Allocator> {
     pub tree: &'a mut [Node<'a>],
     container: &'a mut [NodeContainer<'a>],
-    heigth: usize,
-    num_nodes: usize,
+    order: u8,
     backend: &'a A,
 }
 
-impl<'a> PartialEq for Node<'a> {
+impl PartialEq for Node<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.pos == other.pos
     }
 }
 
 impl<'a, A: Allocator> Tree<'a, A> {
-    fn num_nodes(order: u8) -> usize {
+    fn num_nodes_from_order(order: u8) -> usize {
         (1 << order) * 2 - 1
     }
 
     fn allocate_space(order: u8, backend: &A) -> Option<(&mut [Node], &mut [NodeContainer])> {
-        let nodes_count = Self::num_nodes(order);
+        let nodes_count = Self::num_nodes_from_order(order);
 
         let tree_layout =
             Layout::from_size_align((nodes_count + 1) * size_of::<Node>(), align_of::<Node>())
@@ -70,12 +69,8 @@ impl<'a, A: Allocator> Tree<'a, A> {
         Some((tree, container))
     }
 
-    unsafe fn init_tree(
-        tree: *mut Node<'a>,
-        nodes: *mut NodeContainer<'a>,
-        order: u8,
-        height: usize,
-    ) {
+    unsafe fn init_tree(tree: *mut Node<'a>, nodes: *mut NodeContainer<'a>, order: u8) {
+        let height = order + 1;
         let mut container_num = 0;
         let root = tree.offset(1).as_mut().unwrap();
 
@@ -91,23 +86,23 @@ impl<'a, A: Allocator> Tree<'a, A> {
 
         container_num += 1;
 
-        for i in 2..Self::num_nodes(order) + 1 {
-            let node = tree.offset(i as isize).as_mut().unwrap();
-            let parent = tree.offset(i as isize / 2).as_ref().unwrap();
+        for i in 2..Self::num_nodes_from_order(order) + 1 {
+            let node = tree.add(i).as_mut().unwrap();
+            let parent = tree.add(i / 2).as_ref().unwrap();
 
             node.pos = i as u32;
             node.order = parent.order - 1;
 
-            if (height - node.order as usize) % 4 == 1 {
+            if (height - node.order) % 4 == 1 {
                 let n = nodes.offset(container_num).as_mut().unwrap();
 
                 n.node = node;
 
-                tree.offset(i as isize).as_mut().unwrap().container =
+                tree.add(i).as_mut().unwrap().container =
                     nodes.offset(container_num).as_ref().unwrap();
                 container_num += 1;
 
-                tree.offset(i as isize).as_mut().unwrap().container_pos = 1;
+                tree.add(i).as_mut().unwrap().container_pos = 1;
             } else {
                 node.container = parent.container;
 
@@ -119,44 +114,41 @@ impl<'a, A: Allocator> Tree<'a, A> {
             }
 
             if parent.pos as usize * 2 == i {
-                tree.offset(i as isize).as_mut().unwrap().start = parent.start;
+                tree.add(i).as_mut().unwrap().start = parent.start;
             } else {
-                tree.offset(i as isize).as_mut().unwrap().start =
-                    parent.start + (1 << node.order as usize);
+                tree.add(i).as_mut().unwrap().start = parent.start + (1 << node.order as usize);
             }
         }
 
-        for i in 1..Self::num_nodes(order) {
-            debug_assert!(tree.offset(i as isize).as_mut().unwrap().container_pos != 0);
-            debug_assert!(tree.offset(i as isize).as_mut().unwrap().pos != 0);
+        for i in 1..Self::num_nodes_from_order(order) {
+            debug_assert!(tree.add(i).as_mut().unwrap().container_pos != 0);
+            debug_assert!(tree.add(i).as_mut().unwrap().pos != 0);
         }
     }
 
     pub fn new(order: u8, backend: &'a A) -> Option<Self> {
-        let heigth = order as usize + 1;
         let (tree, nodes) = Self::allocate_space(order, backend)?;
 
         unsafe {
-            Self::init_tree(tree.as_mut_ptr(), nodes.as_mut_ptr(), order, heigth);
+            Self::init_tree(tree.as_mut_ptr(), nodes.as_mut_ptr(), order);
         }
 
         Some(Self {
             tree,
             container: nodes,
-            heigth,
-            num_nodes: Self::num_nodes(order),
+            order,
             backend,
         })
     }
 
     #[inline]
     pub fn height(&self) -> usize {
-        self.heigth
+        (self.order + 1) as usize
     }
 
     #[inline]
     pub fn node_count(&self) -> usize {
-        self.num_nodes
+        Self::num_nodes_from_order(self.order)
     }
 
     #[inline]
@@ -189,7 +181,7 @@ impl<'a, A: Allocator> Tree<'a, A> {
     }
 }
 
-impl<'a, A: Allocator> Drop for Tree<'_, A> {
+impl<A: Allocator> Drop for Tree<'_, A> {
     fn drop(&mut self) {
         use core::ptr::NonNull;
 

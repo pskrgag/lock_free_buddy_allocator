@@ -13,8 +13,6 @@ use std::{
     thread::{self, ThreadId},
 };
 
-const PAGE_SIZE: usize = 1 << 12;
-
 struct Cpu;
 
 impl cpuid::Cpu for Cpu {
@@ -27,7 +25,7 @@ impl cpuid::Cpu for Cpu {
     }
 }
 
-fn buddy_alloc_test<A: Allocator>(n: usize, buddy: BuddyAlloc<PAGE_SIZE, Cpu, A>) {
+fn buddy_alloc_test<A: Allocator>(n: usize, buddy: BuddyAlloc<Cpu, A>) {
     let b = Arc::new(buddy);
 
     std::thread::scope(|s| {
@@ -51,12 +49,7 @@ fn buddy_alloc_test<A: Allocator>(n: usize, buddy: BuddyAlloc<PAGE_SIZE, Cpu, A>
 pub fn criterion_benchmark(c: &mut Criterion) {
     for s in &[1, 5, 10] {
         c.bench_with_input(BenchmarkId::new("lf_buddy_single", s), s, |b, i| {
-            b.iter(|| {
-                buddy_alloc_test(
-                    *i,
-                    BuddyAlloc::<PAGE_SIZE, Cpu, _>::new((0..*s * 4096), &Global).unwrap(),
-                )
-            });
+            b.iter(|| buddy_alloc_test(*i, BuddyAlloc::<Cpu, _>::new(0, 12, &Global).unwrap()));
         });
     }
 }
