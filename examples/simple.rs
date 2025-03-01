@@ -18,7 +18,7 @@ impl cpuid::Cpu for Cpu {
 
 fn main() {
     let buddy: BuddyAlloc<Cpu, std::alloc::Global> =
-        BuddyAlloc::<Cpu, _>::new(0, 4096, &Global).unwrap();
+        BuddyAlloc::<Cpu, _>::new(0, 12, &Global).unwrap();
 
     buddy.free(buddy.alloc(2).unwrap(), 2);
 }

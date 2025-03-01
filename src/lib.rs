@@ -1,11 +1,15 @@
+//! Scalable lock-free buddy system allocator implementation
+//!
+//! Algorithm is based on [Andrea Scarselli's thesis](https://alessandropellegrini.it/publications/tScar17.pdf).
+
 #![no_std]
 #![feature(allocator_api)]
 #![feature(slice_ptr_get)]
 #![allow(dead_code)]
 #![cfg_attr(test, feature(thread_id_value))]
 
-#[cfg(test)]
-#[macro_use]
+// #[cfg(test)]
+// #[macro_use]
 extern crate std;
 
 pub mod buddy_alloc;
@@ -42,8 +46,8 @@ mod test {
     impl MemRegion {
         pub fn new(start: usize, size: usize) -> Self {
             Self {
-                start: start,
-                size: size,
+                start,
+                size,
             }
         }
     }
@@ -114,14 +118,13 @@ mod test {
 
     #[test]
     fn basic_create() {
-        assert!(BuddyAlloc::<Cpu, _>::new(0, 10, &Global).is_none());
-        assert!(BuddyAlloc::<Cpu, _>::new(1000, 1000, &Global).is_none());
-        assert!(BuddyAlloc::<Cpu, _>::new(0, 1 << 4, &Global).is_some());
+        assert!(BuddyAlloc::<Cpu, _>::new(0, 10, &Global).is_some());
+        assert!(BuddyAlloc::<Cpu, _>::new(0, 4, &Global).is_some());
     }
 
     #[test]
     fn alloc_child() {
-        let buddy = BuddyAlloc::<Cpu, _>::new(0, 1024, &Global).unwrap();
+        let buddy = BuddyAlloc::<Cpu, _>::new(0, 10, &Global).unwrap();
 
         assert!(buddy.__try_alloc_node(513).is_none());
         assert!(buddy.__try_alloc_node(513 * 2 + 1).is_some());
@@ -129,7 +132,7 @@ mod test {
 
     #[test]
     fn basic_alloc() {
-        let buddy = BuddyAlloc::<Cpu, _>::new(0, 16, &Global).unwrap();
+        let buddy = BuddyAlloc::<Cpu, _>::new(0, 4, &Global).unwrap();
         let mut vec = Vec::with_capacity(8);
 
         for _ in 0..8 {
@@ -142,11 +145,12 @@ mod test {
 
     #[test]
     fn basic_alloc_1() {
-        let buddy = BuddyAlloc::<Cpu, _>::new(0, 1024, &Global).unwrap();
+        let buddy = BuddyAlloc::<Cpu, _>::new(0, 10, &Global).unwrap();
         let mut vec = Vec::with_capacity(8);
 
-        for _ in 0..512 {
+        for i in 0..512 {
             vec.push(MemRegion::new(buddy.alloc(1).unwrap(), 2 * PAGE_SIZE));
+            std::println!("{i} {:?}", vec.last().unwrap());
         }
 
         assert!(!intersection(vec));
@@ -155,7 +159,7 @@ mod test {
 
     #[test]
     fn basic_free() {
-        let buddy = BuddyAlloc::<Cpu, _>::new(0, 16, &Global).unwrap();
+        let buddy = BuddyAlloc::<Cpu, _>::new(0, 4, &Global).unwrap();
         let mut addrs = Vec::with_capacity(16);
 
         for _ in 0..4 {
@@ -173,7 +177,7 @@ mod test {
 
     #[test]
     fn multi_threaded_alloc_same_size() {
-        let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 1024, &Global).unwrap());
+        let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 10, &Global).unwrap());
         let res_vec = Arc::new(Mutex::new(Vec::<MemRegion>::new()));
 
         let thread = thread::spawn({
@@ -205,7 +209,7 @@ mod test {
 
     #[test]
     fn multi_threaded_alloc_diff_size() {
-        let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 1024, &Global).unwrap());
+        let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 10, &Global).unwrap());
         let res_vec = Arc::new(Mutex::new(Vec::<MemRegion>::new()));
 
         let thread = thread::spawn({
@@ -242,7 +246,7 @@ mod test {
 
     #[test]
     fn buddy_alloc_test() {
-        let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 4096, &Global).unwrap());
+        let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 12, &Global).unwrap());
 
         let w_ths: Vec<_> = (0..10)
             .map(|_| {

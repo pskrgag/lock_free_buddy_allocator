@@ -1,6 +1,4 @@
-//! Scalable lock-free buddy system allocator implementation
-//!
-//! Algorithm is based on [Andrea Scarselli's thesis](https://alessandropellegrini.it/publications/tScar17.pdf).
+//! Core allocator structure
 
 use core::alloc::Allocator;
 use core::sync::atomic::Ordering;
@@ -16,23 +14,21 @@ const COALESCE_RIGHT: usize = 0x4;
 ///
 /// Buddy system allocator allows to allocate chunks with size of power of two.
 ///
-/// `PAGE_SIZE` generic parameter defines the minimum size of a chunk to be allocated. `C` defines
+/// `PAGE_SIZE` generic parameter defines the size of the minimum chunk to be allocated. `C` defines
 /// an interface for obtaining ID of current CPU, which is used for routing different CPUs to
 /// different part of the allocator to prevent contention. `A` is a back-end allocator used for
 /// internal data allocations.
-pub struct BuddyAlloc<'a, C: Cpu, A: Allocator + 'a, const PAGE_SIZE: usize = 4096>
-{
-    tree: Tree<'a, PAGE_SIZE, A>,
+pub struct BuddyAlloc<'a, C: Cpu, A: Allocator + 'a, const PAGE_SIZE: usize = 4096> {
+    tree: Tree<'a, A>,
     start: usize,
-    num_pages: usize,
+    order: u8,
     _d: PhantomData<C>,
 }
 
-impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A, PAGE_SIZE>
-{
+impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A, PAGE_SIZE> {
     #[inline]
     fn level(&self, node: &Node) -> usize {
-        self.tree.height() - (node.size / PAGE_SIZE).ilog2() as usize
+        self.tree.height() - node.order as usize
     }
 
     #[inline]
@@ -138,14 +134,10 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
     /// Allocator works on top of address range, (start..num_pages * PAGE_SIZE). Number of pages
     /// should be power of two, otherwise function will return failure. `backend` will be used for
     /// internal allocations.
-    pub fn new(start: usize, num_pages: usize, backend: &'a A) -> Option<Self> {
-        if !num_pages.is_power_of_two() {
-            return None;
-        }
-
+    pub fn new(start: usize, order: u8, backend: &'a A) -> Option<Self> {
         Some(Self {
-            tree: Tree::<PAGE_SIZE, A>::new(num_pages, backend)?,
-            num_pages,
+            tree: Tree::new(order, backend)?,
+            order,
             start,
             _d: PhantomData,
         })
@@ -153,11 +145,11 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
     /// Allocates pages
     ///
-    /// Function allocates `1 << order` number of pages. On success return address of the start of
-    /// the region, otherwise returns None indicating out-of-memory situation
+    /// Function allocates `1 << order` number of contiguous chunks of PAGE_SIZE size.
+    /// On success return address of the start of the region, otherwise returns None
+    /// indicating out-of-memory situation
     pub fn alloc(&self, order: usize) -> Option<usize> {
-        let pages = 1 << order;
-        let start_node = self.num_pages / pages;
+        let start_node = 1 << (self.order as usize - order as usize);
         let last_node = (self.tree.node(start_node).pos * 2 - 1) as usize;
         let mut a = C::current_cpu();
         let mut restared = false;
@@ -173,9 +165,10 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         let started_at = a;
 
         while {
+            debug_assert!(self.tree.node(a).order as usize == order);
             match self.try_alloc_node(self.tree.node(a)) {
                 None => {
-                    return Some(self.start + self.tree.node(a).start);
+                    return Some((self.start + self.tree.node(a).start) * PAGE_SIZE);
                 }
                 Some(i) => {
                     if i == 1 {
@@ -390,7 +383,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         }
 
         let level = self.tree.height() - order;
-        let level_offset = (self.num_pages / (1 << (level - 1))) * PAGE_SIZE;
+        let level_offset = (1 << (self.order as usize - level + 1)) * PAGE_SIZE;
 
         self.free_node(
             self.tree
@@ -404,6 +397,8 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         if node.pos as usize * 2 >= self.tree.node_count() {
             return val;
         }
+
+        debug_assert!(node.order != 0);
 
         if !self.tree.is_leaf(self.tree.left_of(node)) {
             val = Self::lock_not_leaf(val, self.tree.left_of(node).container_pos);
@@ -467,6 +462,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
     }
 
     fn try_alloc_node(&self, node: &Node) -> Option<usize> {
+        debug_assert!(node.container_pos != 0);
         while {
             let mut new_val;
             let old_val;
