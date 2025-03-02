@@ -2,6 +2,8 @@
 //!
 //! Algorithm is based on [Andrea Scarselli's thesis](https://alessandropellegrini.it/publications/tScar17.pdf).
 //!
+//! # Into
+//!
 //! Algorithm works on top of pre-allocated full binary tree where each node represents a
 //! contiguous memory region with size equal to some power of two. For non-leaf nodes, right and
 //! left children represent nodes that occupy the same range, but with two times smaller size. For
@@ -20,28 +22,70 @@
 //!
 //! ```
 //!
-//! Each node also has a state variable that contain various info about itself and part of
-//! its sub-tree. To reduce contention and number of expensive atomic operations, state of
-//! 15 connected nodes is packed into one atomic word.
+//! # Node state
 //!
+//! Node state contains information about the node itself and it's subtree. Node can be in 4
+//! different states:
+//!     - Occupied -- whole node is allocated
+//!     - Partially occupied -- left or right sub-tree have occupied nodes
+//!     - Coalescing -- is going to be freed soon
+//!     - Free -- node is free
 //!
+//! which sums to 5 bits of space.
 //!
+//! State does not contain information about the parent, which makes allocation faster, since it's not
+//! required to walk sub-tree to update each children state.
+//!
+//! To reduce number of CAS instructions, node state contains information about 15 connected nodes
+//! (4 levels of the tree). Since it's not possible to compact 15 * 5 bits into atomic word
+//! (without considering double CMPXCH), only leaf nodes contain all 5 bits, but other 8 nodes
+//! contain just free / occupied bits.
+//!
+//! # Example usage
+//!
+//! ```rust
+//! #![feature(allocator_api)]
+//! #![feature(thread_id_value)]
+//!
+//! extern crate lock_free_buddy_allocator;
+//!
+//! use lock_free_buddy_allocator::buddy_alloc::BuddyAlloc;
+//! use lock_free_buddy_allocator::cpuid;
+//!
+//! use std::{alloc::Global, thread};
+//!
+//! struct Cpu;
+//!
+//! impl cpuid::Cpu for Cpu {
+//!     fn current_cpu() -> usize {
+//!         thread::current().id().as_u64().get() as usize
+//!     }
+//! }
+//!
+//! fn main() {
+//!     let buddy: BuddyAlloc<Cpu, std::alloc::Global> =
+//!         BuddyAlloc::<Cpu, _>::new(0, 10, &Global).unwrap();
+//!
+//!     buddy.free(buddy.alloc(2).unwrap(), 2);
+//! }
+//! ```
 
 #![no_std]
 #![feature(allocator_api)]
 #![feature(slice_ptr_get)]
 #![cfg_attr(test, feature(thread_id_value))]
 
-#[cfg(test)]
-#[macro_use]
+// #[cfg(test)]
+// #[macro_use]
 extern crate std;
 
 pub mod buddy_alloc;
 pub mod cpuid;
-mod tree;
 mod state;
+mod tree;
 
 #[cfg(test)]
+#[cfg(not(miri))]
 mod test {
     use super::*;
     use buddy_alloc::BuddyAlloc;
@@ -77,12 +121,12 @@ mod test {
     impl PartialEq for MemRegion {
         fn eq(&self, other: &Self) -> bool {
             if self.start > other.start {
-                if other.start + other.size > self.start {
+                if other.start + PAGE_SIZE * (1 << other.size) > self.start {
                     true
                 } else {
                     false
                 }
-            } else if self.start + self.size > other.start {
+            } else if self.start + (1 << self.size) * PAGE_SIZE > other.start {
                 true
             } else {
                 false
@@ -111,8 +155,8 @@ mod test {
         {
             let mut vec = Vec::with_capacity(2);
 
-            vec.push(MemRegion::new(1, 10));
-            vec.push(MemRegion::new(2, 5));
+            vec.push(MemRegion::new(1, 2));
+            vec.push(MemRegion::new(2, 1));
 
             assert!(intersection(vec));
         }
@@ -120,9 +164,9 @@ mod test {
         {
             let mut vec = Vec::with_capacity(2);
 
-            vec.push(MemRegion::new(1, 10));
-            vec.push(MemRegion::new(11, 10));
-            vec.push(MemRegion::new(21, 10));
+            vec.push(MemRegion::new(0, 0));
+            vec.push(MemRegion::new(PAGE_SIZE, 0));
+            vec.push(MemRegion::new(PAGE_SIZE * 2, 0));
 
             assert!(!intersection(vec));
         }
@@ -130,9 +174,9 @@ mod test {
         {
             let mut vec = Vec::with_capacity(2);
 
-            vec.push(MemRegion::new(1, 10));
-            vec.push(MemRegion::new(10, 10));
-            vec.push(MemRegion::new(21, 10));
+            vec.push(MemRegion::new(0, 0));
+            vec.push(MemRegion::new(PAGE_SIZE, 2));
+            vec.push(MemRegion::new(PAGE_SIZE * 2, 1));
 
             assert!(intersection(vec));
         }
@@ -158,7 +202,7 @@ mod test {
         let mut vec = Vec::with_capacity(8);
 
         for _ in 0..8 {
-            vec.push(MemRegion::new(buddy.alloc(1).unwrap(), 2 * PAGE_SIZE));
+            vec.push(MemRegion::new(buddy.alloc(1).unwrap(), 1));
         }
 
         assert!(!intersection(vec));
@@ -171,7 +215,7 @@ mod test {
         let mut vec = Vec::with_capacity(8);
 
         for _ in 0..512 {
-            vec.push(MemRegion::new(buddy.alloc(1).unwrap(), 2 * PAGE_SIZE));
+            vec.push(MemRegion::new(buddy.alloc(1).unwrap(), 1));
         }
 
         assert!(!intersection(vec));
@@ -206,19 +250,18 @@ mod test {
             let res = res_vec.clone();
             move || {
                 for _ in 0..(1024 >> 2) / 2 {
-                    res.lock().unwrap().push(MemRegion::new(
-                        buddy.alloc(2).unwrap(),
-                        (1 << 2) * PAGE_SIZE,
-                    ));
+                    res.lock()
+                        .unwrap()
+                        .push(MemRegion::new(buddy.alloc(2).unwrap(), 2));
                 }
             }
         });
 
         for _ in 0..(1024 >> 2) / 2 {
-            res_vec.lock().unwrap().push(MemRegion::new(
-                buddy.alloc(2).unwrap(),
-                (1 << 2) * PAGE_SIZE,
-            ));
+            res_vec
+                .lock()
+                .unwrap()
+                .push(MemRegion::new(buddy.alloc(2).unwrap(), 2));
         }
 
         thread.join().unwrap();
@@ -238,19 +281,18 @@ mod test {
             let buddy = buddy.clone();
             let res = res_vec.clone();
             move || {
-                for _ in 0..(1024 / 2) >> 4 {
-                    res.lock()
-                        .unwrap()
-                        .push(MemRegion::new(buddy.alloc(4).unwrap(), 4));
+                for _ in 0..((1 << 10) / 2) >> 4 {
+                    if let Some(a) = buddy.alloc(4) {
+                        res.lock().unwrap().push(MemRegion::new(a, 4));
+                    }
                 }
             }
         });
 
         for _ in 0..(1024 / 2) >> 2 {
-            res_vec
-                .lock()
-                .unwrap()
-                .push(MemRegion::new(buddy.alloc(2).unwrap(), 2));
+            if let Some(a) = buddy.alloc(2) {
+                res_vec.lock().unwrap().push(MemRegion::new(a, 2));
+            }
         }
 
         thread.join().unwrap();
@@ -283,6 +325,87 @@ mod test {
 
         for th in w_ths {
             th.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn bug_8threads() {
+        for _ in 0..5 {
+            let buddy = BuddyAlloc::<Cpu, _>::new(0, 13, &Global).unwrap();
+            let b = Arc::new(buddy);
+
+            std::thread::scope(|s| {
+                let w_ths: Vec<_> = (0..8)
+                    .map(|_| {
+                        let b = b.clone();
+                        s.spawn(move || {
+                            'outter: for _ in 0..((1 << 13) / 8) {
+                                for _ in 0..10 {
+                                    if b.alloc(0).is_some() {
+                                        continue 'outter;
+                                    }
+                                }
+
+                                panic!("allocation failure");
+                            }
+                        })
+                    })
+                    .collect();
+
+                for th in w_ths {
+                    th.join().unwrap();
+                }
+            });
+            assert!(b.clone().alloc(0).is_none());
+        }
+    }
+
+    #[test]
+    fn parallel_alloc_free() {
+        let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 12, &Global).unwrap());
+        let allocated = (0..1 << 11)
+            .map(|_| buddy.alloc(0).unwrap())
+            .collect::<Vec<_>>();
+        let buddy_free = buddy.clone();
+
+        let free_t = thread::spawn(move || {
+            for i in allocated {
+                buddy_free.free(i, 0);
+            }
+        });
+
+        let alloc_t = thread::spawn(move || {
+            let _ = (0..1 << 11)
+                .map(|_| buddy.alloc(0).unwrap())
+                .collect::<Vec<_>>();
+        });
+
+        free_t.join().unwrap();
+        alloc_t.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+#[cfg(miri)]
+mod test_miri {
+    use super::*;
+    use buddy_alloc::BuddyAlloc;
+    use std::{alloc::Global, thread};
+
+    struct Cpu;
+
+    impl cpuid::Cpu for Cpu {
+        fn current_cpu() -> usize {
+            thread::current().id().as_u64().get() as usize
+        }
+    }
+
+    #[test]
+    fn alloc_free() {
+        let buddy = BuddyAlloc::<Cpu, _>::new(0, 4, &Global).unwrap();
+
+        for _ in 0..8 {
+            buddy.free(buddy.alloc(1).unwrap(), 1);
         }
     }
 }

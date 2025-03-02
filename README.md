@@ -1,6 +1,6 @@
 # Scalable lock-free buddy system allocator
 
-Algorithm source: https://hpdcs.github.io/ths/scar17.pdf
+Algorithm source: https://alessandropellegrini.it/publications/tScar17.pdf
 
 ## Brief
 
@@ -9,18 +9,20 @@ The buddy memory allocation technique is a memory allocation algorithm that divi
 
 This allocator intended for OS purposes, but might be also used in user-space.
 
-Allocator requiers any backend allocator for allocating internal data structures. In case of OS it might be
+Allocator requires any backend allocator for allocating internal data structures. In case of OS it might be
 allocator based on static memory; in case of user-space `std::alloc::Global` is good candidate. Relying on Global allocator
-seems to be wrong, since buddy system allocator is widly used as page allocator and Global may be not initialized at 
+seems to be wrong, since buddy system allocator is widely used as page allocator and Global may be not initialized at 
 the point of buddy initialization
 
 ## TODO
 
- - Docs
- - Code refactoring
- - Normal benchmarks
- - Full set of test cases
- - Support stable rust (??)
+ - More benchmarks
+
+## Performance
+
+Graph shows that with growing number of threads, allocator's performance grows exponentially
+
+![plot](./lines.svg)
 
 ## Example
 

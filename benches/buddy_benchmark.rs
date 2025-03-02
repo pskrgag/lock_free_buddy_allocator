@@ -1,5 +1,6 @@
 #![feature(allocator_api)]
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+#![cfg_attr(test, feature(thread_id_value))]
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, PlotConfiguration};
 
 extern crate lock_free_buddy_allocator;
 
@@ -8,20 +9,17 @@ use lock_free_buddy_allocator::cpuid;
 
 use std::{
     alloc::{Allocator, Global},
-    num::NonZeroU64,
     sync::Arc,
-    thread::{self, ThreadId},
+    thread,
 };
 
 struct Cpu;
 
+const TEST_ORDER: u8 = 13;
+
 impl cpuid::Cpu for Cpu {
     fn current_cpu() -> usize {
-        // HACK! Since i don't know how to enable feature under #[cfg(test)] only
-        unsafe {
-            (*(&thread::current().id() as *const ThreadId as *const u8 as *const NonZeroU64)).get()
-                as usize
-        }
+        thread::current().id().as_u64().get() as usize
     }
 }
 
@@ -33,8 +31,8 @@ fn buddy_alloc_test<A: Allocator>(n: usize, buddy: BuddyAlloc<Cpu, A>) {
             .map(|_| {
                 let b = b.clone();
                 s.spawn(move || {
-                    for _ in 0..512 {
-                        b.alloc(8).unwrap();
+                    for _ in 0..((1 << TEST_ORDER) / n) {
+                        b.alloc(0).unwrap();
                     }
                 })
             })
@@ -47,11 +45,23 @@ fn buddy_alloc_test<A: Allocator>(n: usize, buddy: BuddyAlloc<Cpu, A>) {
 }
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    for s in &[1, 5, 10] {
-        c.bench_with_input(BenchmarkId::new("lf_buddy_single", s), s, |b, i| {
-            b.iter(|| buddy_alloc_test(*i, BuddyAlloc::<Cpu, _>::new(0, 12, &Global).unwrap()));
+    let plot_config = PlotConfiguration::default();
+    let mut group = c.benchmark_group("Single page alloc");
+
+    group.plot_config(plot_config);
+
+    for s in &[1, 2, 4, 8, 16] {
+        group.bench_with_input(BenchmarkId::new("Single page alloc", s), s, |b, i| {
+            b.iter(|| {
+                buddy_alloc_test(
+                    *i,
+                    BuddyAlloc::<Cpu, _>::new(0, TEST_ORDER, &Global).unwrap(),
+                )
+            });
         });
     }
+
+    group.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);

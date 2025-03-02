@@ -1,22 +1,3 @@
-//! Node state
-//!
-//! Node state contains information about the node itself and it's subtree. Node can be in 4
-//! different states:
-//!     - Occupied -- whole node is allocated
-//!     - Partially occupied -- left or right sub-tree have occupied nodes
-//!     - Coalescing -- is going to be freed soon
-//!     - Free -- node is free
-//!
-//! which sums to 5 bits of space.
-//!
-//! State does not contain information about the parent, which makes allocation faster, since it's not
-//! required to walk sub-tree to update each children state.
-//!
-//! To reduce number of CAS instructions, node state contains information about 15 connected nodes
-//! (4 levels of the tree). Since it's not possible to compact 15 * 5 bits into atomic word
-//! (without considering double CMPXCH), only leaf nodes contain all 5 bits, but other 8 nodes
-//! contain just free / occupied bits.
-
 use core::ops::Deref;
 
 const COALESCE_LEFT: usize = 0x8;
@@ -35,6 +16,7 @@ impl NodeState {
     }
 
     fn leaf_offset(pos: u8) -> usize {
+        debug_assert!(pos >= 8);
         // 7 bits for FREE / OCCUPIED state in non-leaf nodes and 5 bits per-leaf node
         7 + (5 * (pos as usize - 8))
     }

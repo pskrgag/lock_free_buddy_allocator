@@ -49,7 +49,11 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
     /// indicating out-of-memory situation
     pub fn alloc(&self, order: usize) -> Option<usize> {
         let start_node: usize = 1 << (self.order as usize - order);
-        let last_node = (self.tree.left_of(self.tree.node(start_node as u32)).pos - 1) as usize;
+        let last_node = if order == 0 {
+            self.tree.node_count()
+        } else {
+            (self.tree.left_of(self.tree.node(start_node as u32)).pos - 1) as usize
+        };
         let mut a = C::current_cpu();
         let mut restared = false;
 
@@ -62,6 +66,11 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         a += start_node;
 
         let started_at = a;
+
+        debug_assert_eq!(
+            (start_node..last_node + 1).len(),
+            1 << (self.tree.height() - order) - 1
+        );
 
         while {
             debug_assert!(self.tree.node(a as u32).order() == order);
@@ -264,7 +273,9 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         }
 
         let level = self.tree.height() - order;
-        let level_offset = (1 << (self.order as usize - level + 1)) * PAGE_SIZE;
+
+        // NOTE: +1 should go first to prevent underflow
+        let level_offset = (1 << (self.order as usize + 1 - level)) * PAGE_SIZE;
 
         self.free_node(
             self.tree
@@ -299,7 +310,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
     }
 
     fn check_parent(&self, node: &Node) -> Option<(usize, usize)> {
-        let mut parent = self.tree.parent_of(node);
+        let parent = self.tree.parent_of(node);
         let container_parent = self.tree.container(parent.container_offset);
         let root = self.tree.node(container_parent.root);
 
@@ -322,12 +333,14 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
             };
 
             new_val = new_val.lock_not_leaf(self.tree.parent_of(parent).container_pos());
-            parent = self.tree.parent_of(parent);
             new_val = new_val
                 .lock_not_leaf(self.tree.parent_of(parent).container_pos())
                 .lock_not_leaf(root.container_pos());
 
-            !container_parent.try_update(old_val, new_val)
+            !self
+                .tree
+                .container(self.tree.parent_of(node).container_offset)
+                .try_update(old_val, new_val)
         } {}
 
         if root == self.tree.root() {
