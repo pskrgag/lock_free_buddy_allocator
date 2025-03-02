@@ -24,6 +24,8 @@
 //! its sub-tree. To reduce contention and number of expensive atomic operations, state of
 //! 15 connected nodes is packed into one atomic word.
 //!
+//!
+//!
 
 #![no_std]
 #![feature(allocator_api)]

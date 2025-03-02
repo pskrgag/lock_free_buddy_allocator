@@ -4,14 +4,14 @@ use core::mem::{align_of, size_of};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
-pub(crate) struct NodeContainer<'a> {
+pub(crate) struct NodeContainer {
     // State of 15 nodes
     nodes: AtomicUsize,
     // Root of the sub-tree
-    node: &'a Node,
+    pub root: u32,
 }
 
-impl NodeContainer<'_> {
+impl NodeContainer {
     pub fn get_state(&self) -> NodeState {
         self.nodes.load(Ordering::Relaxed).into()
     }
@@ -20,10 +20,6 @@ impl NodeContainer<'_> {
         self.nodes
             .compare_exchange(*old, *current, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
-    }
-
-    pub fn root(&self) -> &Node {
-        self.node
     }
 }
 
@@ -67,7 +63,7 @@ impl Node {
 
 pub(crate) struct Tree<'a, A: Allocator> {
     tree: &'a mut [Node],
-    container: &'a mut [NodeContainer<'a>],
+    container: &'a mut [NodeContainer],
     order: u8,
     backend: &'a A,
 }
@@ -75,6 +71,10 @@ pub(crate) struct Tree<'a, A: Allocator> {
 impl<'a, A: Allocator> Tree<'a, A> {
     pub fn container(&self, offset: u32) -> &NodeContainer {
         &self.container[offset as usize]
+    }
+
+    pub fn node(&self, offset: u32) -> &Node {
+        &self.tree[offset as usize]
     }
 
     fn num_nodes_from_order(order: u8) -> usize {
@@ -115,71 +115,61 @@ impl<'a, A: Allocator> Tree<'a, A> {
         Some((tree, container))
     }
 
-    unsafe fn init_tree(tree: *mut Node, nodes: *mut NodeContainer<'a>, order: u8) {
+    fn init_tree(tree: &mut [Node], nodes: &mut [NodeContainer], order: u8) {
         let height = order + 1;
         let mut container_num = 0;
-        let root = tree.offset(1).as_mut().unwrap();
 
-        root.start = 0;
-        root.pos = 1;
-        root.set_order_and_pos(order, 1);
+        tree[1].start = 0;
+        tree[1].pos = 1;
+        tree[1].set_order_and_pos(order, 1);
 
-        let node = nodes.offset(container_num).as_mut().unwrap();
-
-        node.node = tree.offset(1).as_ref().unwrap();
-        root.container_offset = container_num as u32;
+        nodes[container_num].root = 1;
+        tree[1].container_offset = container_num as u32;
 
         container_num += 1;
 
         for i in 2..Self::num_nodes_from_order(order) + 1 {
-            let node = tree.add(i).as_mut().unwrap();
-            let parent = tree.add(i / 2).as_ref().unwrap();
-            let order = parent.order() as u8 - 1;
+            let order = tree[i / 2].order() as u8 - 1;
 
-            node.pos = i as u32;
+            tree[i].pos = i as u32;
 
             if (height - order) % 4 == 1 {
-                let n = nodes.offset(container_num).as_mut().unwrap();
-
-                n.node = node;
-
-                tree.add(i).as_mut().unwrap().container_offset = container_num as u32;
+                nodes[container_num].root = i as u32;
+                tree[i].container_offset = container_num as u32;
                 container_num += 1;
 
-                tree.add(i).as_mut().unwrap().set_order_and_pos(order, 1);
+                tree[i].set_order_and_pos(order, 1);
             } else {
-                node.container_offset = parent.container_offset;
+                tree[i].container_offset = tree[i / 2].container_offset;
 
-                if parent.pos * 2 == i as u32 {
-                    node.set_order_and_pos(order, parent.container_pos() * 2);
+                if tree[i / 2].pos * 2 == i as u32 {
+                    tree[i].set_order_and_pos(order, tree[i / 2].container_pos() * 2);
                 } else {
-                    node.set_order_and_pos(order, parent.container_pos() * 2 + 1);
+                    tree[i].set_order_and_pos(order, tree[i / 2].container_pos() * 2 + 1);
                 }
             }
 
-            if parent.pos as usize * 2 == i {
-                tree.add(i).as_mut().unwrap().start = parent.start;
+            if tree[i / 2].pos as usize * 2 == i {
+                tree[i].start = tree[i / 2].start;
             } else {
-                tree.add(i).as_mut().unwrap().start = parent.start + (1 << node.order());
+                tree[i].start = tree[i / 2].start + (1 << tree[i].order());
             }
         }
 
         for i in 1..Self::num_nodes_from_order(order) {
-            debug_assert!(tree.add(i).as_mut().unwrap().container_pos() != 0);
-            debug_assert!(tree.add(i).as_mut().unwrap().pos != 0);
+            debug_assert!(tree[i].container_pos() != 0);
+            debug_assert!(tree[i].pos != 0);
         }
     }
 
     pub fn new(order: u8, backend: &'a A) -> Option<Self> {
-        let (tree, nodes) = Self::allocate_space(order, backend)?;
+        let (tree, container) = Self::allocate_space(order, backend)?;
 
-        unsafe {
-            Self::init_tree(tree.as_mut_ptr(), nodes.as_mut_ptr(), order);
-        }
+        Self::init_tree(tree, container, order);
 
         Some(Self {
             tree,
-            container: nodes,
+            container,
             order,
             backend,
         })
@@ -193,11 +183,6 @@ impl<'a, A: Allocator> Tree<'a, A> {
     #[inline]
     pub fn node_count(&self) -> usize {
         Self::num_nodes_from_order(self.order)
-    }
-
-    #[inline]
-    pub fn node(&self, pos: usize) -> &Node {
-        &self.tree[pos]
     }
 
     #[inline]

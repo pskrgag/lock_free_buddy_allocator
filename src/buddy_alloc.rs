@@ -48,8 +48,8 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
     /// On success return address of the start of the region, otherwise returns None
     /// indicating out-of-memory situation
     pub fn alloc(&self, order: usize) -> Option<usize> {
-        let start_node = 1 << (self.order as usize - order);
-        let last_node = (self.tree.left_of(self.tree.node(start_node)).pos - 1) as usize;
+        let start_node: usize = 1 << (self.order as usize - order);
+        let last_node = (self.tree.left_of(self.tree.node(start_node as u32)).pos - 1) as usize;
         let mut a = C::current_cpu();
         let mut restared = false;
 
@@ -64,11 +64,11 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         let started_at = a;
 
         while {
-            debug_assert!(self.tree.node(a).order() == order);
+            debug_assert!(self.tree.node(a as u32).order() == order);
 
-            match self.try_alloc_node(self.tree.node(a)) {
+            match self.try_alloc_node(self.tree.node(a as u32)) {
                 None => {
-                    return Some((self.start + self.tree.node(a).start) * PAGE_SIZE);
+                    return Some((self.start + self.tree.node(a as u32).start) * PAGE_SIZE);
                 }
                 Some(i) => {
                     if i == 1 {
@@ -76,7 +76,8 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
                     }
 
                     a = (i + 1)
-                        * (1 << (self.level(self.tree.node(a)) - self.level(self.tree.node(i))));
+                        * (1 << (self.level(self.tree.node(a as u32))
+                            - self.level(self.tree.node(i as u32))));
                 }
             }
 
@@ -169,8 +170,9 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
             cur = self.tree.parent_of(node);
             let cur_cont = self.tree.container(cur.container_offset);
+            let cur_root = self.tree.node(cur_cont.root);
 
-            while cur.pos != cur_cont.root().pos {
+            while cur.pos != cur_root.pos {
                 exit = self.check_brother(cur, new_val);
                 if exit {
                     break;
@@ -205,17 +207,20 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
             !container.try_update(old_val, new_val)
         } {}
 
-        if container.root().pos != upper_bound.pos {
-            self.mark(container.root(), upper_bound);
+        let root = self.tree.node(container.root);
+
+        if root.pos != upper_bound.pos {
+            self.mark(root, upper_bound);
         }
     }
 
     fn free_node(&self, node: &Node, upper_bound: &Node) {
         let mut exit;
         let container = self.tree.container(node.container_offset);
+        let root = self.tree.node(container.root);
 
-        if container.root().pos != upper_bound.pos {
-            self.mark(container.root(), upper_bound);
+        if root.pos != upper_bound.pos {
+            self.mark(root, upper_bound);
         }
 
         while {
@@ -225,7 +230,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
             exit = false;
 
-            'inner: while cur.pos != container.root().pos {
+            'inner: while cur.pos != root.pos {
                 exit = self.check_brother(cur, new_val);
                 if exit {
                     break 'inner;
@@ -243,8 +248,10 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
             !container.try_update(old_val, new_val)
         } {}
 
-        if container.root().pos != upper_bound.pos && !exit {
-            self.unmark(container.root(), upper_bound);
+        let root = self.tree.node(container.root);
+
+        if root.pos != upper_bound.pos && !exit {
+            self.unmark(root, upper_bound);
         }
     }
 
@@ -261,7 +268,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
         self.free_node(
             self.tree
-                .node((1 << (level - 1)) + (start - self.start) / level_offset),
+                .node(((1 << (level - 1)) + (start - self.start) / level_offset) as u32),
             self.tree.root(),
         );
         Some(())
@@ -294,7 +301,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
     fn check_parent(&self, node: &Node) -> Option<(usize, usize)> {
         let mut parent = self.tree.parent_of(node);
         let container_parent = self.tree.container(parent.container_offset);
-        let root = container_parent.root();
+        let root = self.tree.node(container_parent.root);
 
         while {
             let mut new_val = container_parent.get_state();
@@ -332,7 +339,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
     #[cfg(test)]
     pub(crate) fn __try_alloc_node(&self, pos: usize) -> Option<usize> {
-        self.try_alloc_node(self.tree.node(pos))
+        self.try_alloc_node(self.tree.node(pos as u32))
     }
 
     fn try_alloc_node(&self, node: &Node) -> Option<usize> {
@@ -348,7 +355,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
             }
 
             let old_val = new_val;
-            let root_pos = container.root().pos;
+            let root_pos = self.tree.node(container.root).pos;
             let mut cur = node;
 
             // Lock all nodes up to root of the container
@@ -377,14 +384,14 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
                 .try_update(old_val, new_val)
         } {}
 
-        if container.root() == self.tree.root() {
+        if self.tree.node(container.root) == self.tree.root() {
             return None;
         }
 
-        match self.check_parent(container.root()) {
+        match self.check_parent(self.tree.node(container.root)) {
             None => None,
             Some((i, n)) => {
-                self.free_node(node, self.tree.node(n));
+                self.free_node(node, self.tree.node(n as u32));
                 Some(i)
             }
         }
