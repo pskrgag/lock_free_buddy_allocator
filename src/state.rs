@@ -30,10 +30,6 @@ const RIGHT_OCCUPIED: usize = 0x1;
 pub struct NodeState(usize);
 
 impl NodeState {
-    pub fn new() -> Self {
-        Self(0)
-    }
-
     fn is_leaf(pos: u8) -> bool {
         pos >= 8
     }

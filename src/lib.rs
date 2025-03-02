@@ -20,18 +20,18 @@
 //!
 //! ```
 //!
-//! Each node also contains state variable that contain various info about 
-//!
+//! Each node also has a state variable that contain various info about itself and part of
+//! its sub-tree. To reduce contention and number of expensive atomic operations, state of
+//! 15 connected nodes is packed into one atomic word.
 //!
 
 #![no_std]
 #![feature(allocator_api)]
 #![feature(slice_ptr_get)]
-#![allow(dead_code)]
 #![cfg_attr(test, feature(thread_id_value))]
 
-// #[cfg(test)]
-// #[macro_use]
+#[cfg(test)]
+#[macro_use]
 extern crate std;
 
 pub mod buddy_alloc;
@@ -168,9 +168,8 @@ mod test {
         let buddy = BuddyAlloc::<Cpu, _>::new(0, 10, &Global).unwrap();
         let mut vec = Vec::with_capacity(8);
 
-        for i in 0..512 {
+        for _ in 0..512 {
             vec.push(MemRegion::new(buddy.alloc(1).unwrap(), 2 * PAGE_SIZE));
-            std::println!("{i} {:?}", vec.last().unwrap());
         }
 
         assert!(!intersection(vec));

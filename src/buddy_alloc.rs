@@ -64,7 +64,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         let started_at = a;
 
         while {
-            debug_assert!(self.tree.node(a).order() as usize == order);
+            debug_assert!(self.tree.node(a).order() == order);
 
             match self.try_alloc_node(self.tree.node(a)) {
                 None => {
@@ -124,7 +124,8 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
         'foo: while {
             let parent = self.tree.parent_of(node);
-            let mut new_val = parent.container.get_state();
+            let container = self.tree.container(parent.container_offset);
+            let mut new_val = container.get_state();
             let old_val = new_val;
 
             cur = node;
@@ -140,7 +141,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
                     .clean_left_occupy(parent.container_pos());
 
                 if new_val.is_occupied_rigth(parent.container_pos()) {
-                    if !parent.container.try_update(old_val, new_val) {
+                    if !container.try_update(old_val, new_val) {
                         continue 'foo;
                     } else {
                         break 'foo;
@@ -158,7 +159,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
                     .clean_rigth_occupy(parent.container_pos());
 
                 if new_val.is_occupied_left(parent.container_pos()) {
-                    if !parent.container.try_update(old_val, new_val) {
+                    if !container.try_update(old_val, new_val) {
                         continue 'foo;
                     } else {
                         break 'foo;
@@ -167,8 +168,9 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
             }
 
             cur = self.tree.parent_of(node);
+            let cur_cont = self.tree.container(cur.container_offset);
 
-            while cur.pos != cur.container.node.pos {
+            while cur.pos != cur_cont.root().pos {
                 exit = self.check_brother(cur, new_val);
                 if exit {
                     break;
@@ -178,7 +180,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
                 cur = self.tree.parent_of(cur);
             }
 
-            !parent.container.try_update(old_val, new_val)
+            !container.try_update(old_val, new_val)
         } {}
 
         if cur.pos != upper_bound.pos && !exit {
@@ -188,9 +190,10 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
     fn mark(&self, node: &Node, upper_bound: &Node) {
         let parent = self.tree.parent_of(node);
+        let container = self.tree.container(parent.container_offset);
 
         while {
-            let mut new_val = parent.container.get_state();
+            let mut new_val = container.get_state();
             let old_val = new_val;
 
             new_val = if self.tree.left_of(parent) == node {
@@ -199,29 +202,30 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
                 new_val.rigth_coalesce(parent.container_pos())
             };
 
-            !parent.container.try_update(old_val, new_val)
+            !container.try_update(old_val, new_val)
         } {}
 
-        if parent.container.node.pos != upper_bound.pos {
-            self.mark(parent.container.node, upper_bound);
+        if container.root().pos != upper_bound.pos {
+            self.mark(container.root(), upper_bound);
         }
     }
 
     fn free_node(&self, node: &Node, upper_bound: &Node) {
         let mut exit;
+        let container = self.tree.container(node.container_offset);
 
-        if node.container.node.pos != upper_bound.pos {
-            self.mark(node.container.node, upper_bound);
+        if container.root().pos != upper_bound.pos {
+            self.mark(container.root(), upper_bound);
         }
 
         while {
-            let mut new_val = node.container.get_state();
+            let mut new_val = container.get_state();
             let old_val = new_val;
             let mut cur = node;
 
             exit = false;
 
-            'inner: while cur.pos != node.container.node.pos {
+            'inner: while cur.pos != container.root().pos {
                 exit = self.check_brother(cur, new_val);
                 if exit {
                     break 'inner;
@@ -236,11 +240,11 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
             }
 
             new_val = new_val.unlock(node.container_pos());
-            !node.container.try_update(old_val, new_val)
+            !container.try_update(old_val, new_val)
         } {}
 
-        if node.container.node.pos != upper_bound.pos && !exit {
-            self.unmark(node.container.node, upper_bound);
+        if container.root().pos != upper_bound.pos && !exit {
+            self.unmark(container.root(), upper_bound);
         }
     }
 
@@ -269,6 +273,10 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
         }
 
         debug_assert!(node.order() != 0);
+        debug_assert!(
+            self.tree.is_leaf(self.tree.left_of(node))
+                == self.tree.is_leaf(self.tree.right_of(node))
+        );
 
         if !self.tree.is_leaf(self.tree.left_of(node)) {
             val = val
@@ -285,13 +293,11 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
     fn check_parent(&self, node: &Node) -> Option<(usize, usize)> {
         let mut parent = self.tree.parent_of(node);
-        let root = parent.container.node;
+        let container_parent = self.tree.container(parent.container_offset);
+        let root = container_parent.root();
 
         while {
-            let mut new_val;
-
-            new_val = parent.container.get_state();
-
+            let mut new_val = container_parent.get_state();
             let old_val = new_val;
 
             if new_val.is_occupied(parent.container_pos()) {
@@ -314,11 +320,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
                 .lock_not_leaf(self.tree.parent_of(parent).container_pos())
                 .lock_not_leaf(root.container_pos());
 
-            !self
-                .tree
-                .parent_of(node)
-                .container
-                .try_update(old_val, new_val)
+            !container_parent.try_update(old_val, new_val)
         } {}
 
         if root == self.tree.root() {
@@ -335,9 +337,10 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
     fn try_alloc_node(&self, node: &Node) -> Option<usize> {
         debug_assert!(node.container_pos() != 0);
+        let container = self.tree.container(node.container_offset);
 
         while {
-            let mut new_val = node.container.get_state();
+            let mut new_val = container.get_state();
 
             // If node cannot be allocated -- bail out
             if !new_val.is_allocable(node.container_pos()) {
@@ -345,33 +348,40 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
             }
 
             let old_val = new_val;
-            let root_pos = node.container.node.pos;
+            let root_pos = container.root().pos;
             let mut cur = node;
 
+            // Lock all nodes up to root of the container
             while cur.pos != root_pos {
                 new_val = new_val.lock_not_leaf(self.tree.parent_of(cur).container_pos());
 
                 cur = self.tree.parent_of(cur);
             }
 
+            // Lock the node itself
             if self.tree.is_leaf(node) {
                 new_val = new_val.lock_leaf(node.container_pos());
             } else {
                 new_val = new_val.lock_not_leaf(node.container_pos());
 
+                // Lock all sub-tree of children
                 if node.pos as usize * 2 < self.tree.node_count() {
                     new_val = self.lock_descendants(node, new_val);
                 }
             }
 
-            !node.container.try_update(old_val, new_val)
+            // Try to commit changes
+            !self
+                .tree
+                .container(node.container_offset)
+                .try_update(old_val, new_val)
         } {}
 
-        if node.container.node == self.tree.root() {
+        if container.root() == self.tree.root() {
             return None;
         }
 
-        match self.check_parent(node.container.node) {
+        match self.check_parent(container.root()) {
             None => None,
             Some((i, n)) => {
                 self.free_node(node, self.tree.node(n));

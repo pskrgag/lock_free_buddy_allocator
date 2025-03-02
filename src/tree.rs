@@ -8,7 +8,7 @@ pub(crate) struct NodeContainer<'a> {
     // State of 15 nodes
     nodes: AtomicUsize,
     // Root of the sub-tree
-    pub node: &'a Node<'a>,
+    node: &'a Node,
 }
 
 impl NodeContainer<'_> {
@@ -21,11 +21,15 @@ impl NodeContainer<'_> {
             .compare_exchange(*old, *current, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
     }
+
+    pub fn root(&self) -> &Node {
+        self.node
+    }
 }
 
 /// The node of the binary tree
 #[derive(Debug)]
-pub(crate) struct Node<'a> {
+pub(crate) struct Node {
     // Compressed order and container position
     order_and_pos: u8,
     // Start of the region
@@ -33,10 +37,16 @@ pub(crate) struct Node<'a> {
     // Position in the binary tree
     pub pos: u32,
     // Container with node state
-    pub container: &'a NodeContainer<'a>,
+    pub container_offset: u32,
 }
 
-impl Node<'_> {
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        self.pos == other.pos
+    }
+}
+
+impl Node {
     pub fn order(&self) -> usize {
         self.order_and_pos as usize & 0xf
     }
@@ -56,19 +66,17 @@ impl Node<'_> {
 }
 
 pub(crate) struct Tree<'a, A: Allocator> {
-    tree: &'a mut [Node<'a>],
+    tree: &'a mut [Node],
     container: &'a mut [NodeContainer<'a>],
     order: u8,
     backend: &'a A,
 }
 
-impl PartialEq for Node<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        self.pos == other.pos
-    }
-}
-
 impl<'a, A: Allocator> Tree<'a, A> {
+    pub fn container(&self, offset: u32) -> &NodeContainer {
+        &self.container[offset as usize]
+    }
+
     fn num_nodes_from_order(order: u8) -> usize {
         (1 << order) * 2 - 1
     }
@@ -107,7 +115,7 @@ impl<'a, A: Allocator> Tree<'a, A> {
         Some((tree, container))
     }
 
-    unsafe fn init_tree(tree: *mut Node<'a>, nodes: *mut NodeContainer<'a>, order: u8) {
+    unsafe fn init_tree(tree: *mut Node, nodes: *mut NodeContainer<'a>, order: u8) {
         let height = order + 1;
         let mut container_num = 0;
         let root = tree.offset(1).as_mut().unwrap();
@@ -119,7 +127,7 @@ impl<'a, A: Allocator> Tree<'a, A> {
         let node = nodes.offset(container_num).as_mut().unwrap();
 
         node.node = tree.offset(1).as_ref().unwrap();
-        root.container = nodes.offset(container_num).as_ref().unwrap();
+        root.container_offset = container_num as u32;
 
         container_num += 1;
 
@@ -135,13 +143,12 @@ impl<'a, A: Allocator> Tree<'a, A> {
 
                 n.node = node;
 
-                tree.add(i).as_mut().unwrap().container =
-                    nodes.offset(container_num).as_ref().unwrap();
+                tree.add(i).as_mut().unwrap().container_offset = container_num as u32;
                 container_num += 1;
 
                 tree.add(i).as_mut().unwrap().set_order_and_pos(order, 1);
             } else {
-                node.container = parent.container;
+                node.container_offset = parent.container_offset;
 
                 if parent.pos * 2 == i as u32 {
                     node.set_order_and_pos(order, parent.container_pos() * 2);
