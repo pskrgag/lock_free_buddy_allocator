@@ -136,7 +136,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
                 new_val = new_val
                     .clean_left_coalesce(parent.container_pos)
-                    .clean_left(parent.container_pos);
+                    .clean_left_occupy(parent.container_pos);
 
                 if new_val.is_occupied_rigth(parent.container_pos) {
                     if !parent.container.try_update(old_val, new_val) {
@@ -154,7 +154,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
                 new_val = new_val
                     .clean_rigth_coalesce(parent.container_pos)
-                    .clean_rigth(parent.container_pos);
+                    .clean_rigth_occupy(parent.container_pos);
 
                 if new_val.is_occupied_left(parent.container_pos) {
                     if !parent.container.try_update(old_val, new_val) {
@@ -234,12 +234,7 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
                 new_val = self.unlock_descendants(node, new_val);
             }
 
-            if self.tree.is_leaf(node) {
-                new_val = new_val.unlock_leaf(node.container_pos);
-            } else {
-                new_val = new_val.unlock_not_leaf(node.container_pos);
-            }
-
+            new_val = new_val.unlock(node.container_pos);
             !node.container.try_update(old_val, new_val)
         } {}
 
@@ -339,11 +334,11 @@ impl<'a, const PAGE_SIZE: usize, C: Cpu, A: Allocator + 'a> BuddyAlloc<'a, C, A,
 
     fn try_alloc_node(&self, node: &Node) -> Option<usize> {
         debug_assert!(node.container_pos != 0);
+
         while {
-            let mut new_val;
+            let mut new_val = node.container.get_state();
 
-            new_val = node.container.get_state();
-
+            // If node cannot be allocated -- bail out
             if !new_val.is_allocable(node.container_pos) {
                 return Some(node.pos as usize);
             }
