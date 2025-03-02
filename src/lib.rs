@@ -30,8 +30,8 @@
 #![allow(dead_code)]
 #![cfg_attr(test, feature(thread_id_value))]
 
-#[cfg(test)]
-#[macro_use]
+// #[cfg(test)]
+// #[macro_use]
 extern crate std;
 
 pub mod buddy_alloc;
