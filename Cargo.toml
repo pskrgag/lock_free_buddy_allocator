@@ -1,6 +1,6 @@
 [package]
 name = "lock_free_buddy_allocator"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 crate-type = ["lib"]
 authors = ["Pavel Skripkin paskripkin@gmail.com"]
@@ -13,6 +13,9 @@ description = "Scalable lock-free buddy system allocator"
 
 [dev-dependencies]
 criterion = {version = "0.5", feature = ["html_reports"] }
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
 
 [[bench]]
 name = "buddy_benchmark"

@@ -1,7 +1,7 @@
 use super::state::NodeState;
+use crate::{AtomicUsize, Ordering};
 use core::alloc::{Allocator, Layout};
 use core::mem::{align_of, size_of};
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
 pub(crate) struct NodeContainer {
@@ -118,6 +118,10 @@ impl<'a, A: Allocator> Tree<'a, A> {
     fn init_tree(tree: &mut [Node], nodes: &mut [NodeContainer], order: u8) {
         let height = order + 1;
         let mut container_num = 0;
+
+        for i in nodes.iter_mut() {
+            i.nodes = AtomicUsize::new(0);
+        }
 
         tree[1].start = 0;
         tree[1].pos = 1;

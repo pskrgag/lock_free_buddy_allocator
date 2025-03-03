@@ -74,9 +74,18 @@
 #![feature(allocator_api)]
 #![feature(slice_ptr_get)]
 #![cfg_attr(test, feature(thread_id_value))]
+#![cfg_attr(test, feature(rustc_private))]
+#![cfg_attr(test, feature(non_null_from_ref))]
+#![allow(unexpected_cfgs)]
 
-// #[cfg(test)]
-// #[macro_use]
+#[cfg(loom)]
+pub(crate) use loom::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(not(loom))]
+pub(crate) use core::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(test)]
+#[macro_use]
 extern crate std;
 
 pub mod buddy_alloc;
@@ -86,6 +95,7 @@ mod tree;
 
 #[cfg(test)]
 #[cfg(not(miri))]
+#[cfg(not(loom))]
 mod test {
     use super::*;
     use buddy_alloc::BuddyAlloc;
@@ -407,5 +417,83 @@ mod test_miri {
         for _ in 0..8 {
             buddy.free(buddy.alloc(1).unwrap(), 1);
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(loom)]
+mod test_loom {
+    use super::*;
+    use buddy_alloc::BuddyAlloc;
+    use loom::thread;
+    use std::alloc::AllocError;
+    use std::alloc::{Allocator, Layout};
+    use std::ptr::NonNull;
+    use std::sync::Arc;
+
+    extern crate libc;
+
+    struct Cpu;
+    struct Alloc;
+
+    impl cpuid::Cpu for Cpu {
+        fn current_cpu() -> usize {
+            0
+        }
+    }
+
+    unsafe impl Allocator for Alloc {
+        unsafe fn deallocate(&self, ptr: NonNull<u8>, _layout: Layout) {
+            libc::free(ptr.as_ptr() as *mut libc::c_void);
+        }
+
+        fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+            let p = unsafe { libc::malloc(layout.size()) };
+
+            if p.is_null() {
+                Err(AllocError)
+            } else {
+                unsafe {
+                    Ok(NonNull::from_ref(core::slice::from_raw_parts_mut(
+                        p as *mut u8,
+                        layout.size(),
+                    )))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn alloc_alloc() {
+        loom::model(move || {
+            let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 1, &Alloc).unwrap());
+            let thread = thread::spawn({
+                let buddy = buddy.clone();
+
+                move || {
+                    buddy.alloc(0).unwrap();
+                }
+            });
+
+            buddy.alloc(0).unwrap();
+            thread.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn alloc_free() {
+        loom::model(move || {
+            let buddy = Arc::new(BuddyAlloc::<Cpu, _>::new(0, 1, &Alloc).unwrap());
+            let thread = thread::spawn({
+                let buddy = buddy.clone();
+
+                move || {
+                    buddy.alloc(0).unwrap();
+                }
+            });
+
+            buddy.free(buddy.alloc(0).unwrap(), 0);
+            thread.join().unwrap();
+        });
     }
 }
